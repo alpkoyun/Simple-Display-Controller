@@ -1,0 +1,90 @@
+# State Machine
+
+## Device State
+
+The driver does not define a formal device-state enum. This diagram reflects
+the current state represented by PCI/DRM lifetime and fields in
+`struct fpga_drm_device`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unloaded
+    Unloaded --> PCIRegistered: module load
+    PCIRegistered --> Probing: PCI match
+    Probing --> FrameBuffersReady: fpga_drm_alloc_frame_buffers
+    FrameBuffersReady --> XDMAOpen: fpga_drm_open_xdma
+    XDMAOpen --> KMSReady: fpga_drm_modeset_init
+    KMSReady --> DRMRegistered: drm_dev_register
+    DRMRegistered --> ConnectorConnected: default connector mode
+    DRMRegistered --> ConnectorDisconnected: diagnostic disconnected override
+    ConnectorConnected --> PipeEnabled: fpga_drm_pipe_enable
+    PipeEnabled --> UploadQueued: fpga_drm_mark_dirty
+    UploadQueued --> DMAInFlight: xdma_xfer_submit_lines_nowait
+    DMAInFlight --> Completing: callback or timeout
+    Completing --> PipeEnabled: frame complete
+    Completing --> UploadError: completion error
+    UploadError --> PipeEnabled: later update
+    PipeEnabled --> PipeDisabled: fpga_drm_pipe_disable
+    PipeDisabled --> DRMRegistered: fpga_drm_stop_uploads
+    DRMRegistered --> Removing: fpga_drm_remove
+    Removing --> Removed: drm_dev_unplug and shutdown
+    Removed --> Unloaded: module unload completes
+```
+
+## State Descriptions
+
+| State | Meaning |
+|---|---|
+| `FrameBuffersReady` | 720 line buffers and `frame_sgt` have been allocated. |
+| `XDMAOpen` | `xdma_device_open()` succeeded and the selected H2C channel is valid. |
+| `KMSReady` | Mode config, virtual connector, and simple display pipe exist. |
+| `DRMRegistered` | Userspace can see `/dev/dri/cardN`. |
+| `ConnectorConnected` | The driver advertises the fixed 1280x720 mode. This is the default. |
+| `ConnectorDisconnected` | Diagnostic mode when the connector is manually forced disconnected. |
+| `DMAInFlight` | One async frame upload is queued in the XDMA core. |
+| `Completing` | Callback or timeout has scheduled `dma_complete_work`. |
+
+## Upload State
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> PendingWork: fpga_drm_mark_dirty
+    PendingWork --> Copying: upload_work starts
+    Copying --> InFlight: submit returns -EIOCBQUEUED
+    Copying --> SubmitError: copy or submit fails
+    InFlight --> CompletionPending: fpga_drm_xdma_done
+    InFlight --> CompletionPending: dma_timeout_work
+    InFlight --> PendingAgain: update arrives while busy
+    PendingAgain --> CompletionPending: current DMA completes
+    CompletionPending --> Idle: successful completion and no pending update
+    CompletionPending --> PendingWork: upload_pending=true
+    CompletionPending --> SubmitError: completion error
+    SubmitError --> Idle: error logged
+```
+
+## Software Transitions
+
+| Transition | Function |
+|---|---|
+| Userspace commit to dirty framebuffer | `fpga_drm_pipe_enable()` / `fpga_drm_pipe_update()` |
+| Dirty framebuffer to queued work | `fpga_drm_mark_dirty()` |
+| Queued work to in-flight DMA | `fpga_drm_upload_work()` and `fpga_drm_submit_frame_nowait()` |
+| In-flight DMA to completion work | `fpga_drm_xdma_done()` or `fpga_drm_dma_timeout_work()` |
+| Completion work to idle or retry | `fpga_drm_dma_finish()` |
+| Active display to stopped uploads | `fpga_drm_pipe_disable()` / `fpga_drm_stop_uploads()` |
+
+## XDMA Transfer State
+
+The XDMA core retains its own transfer states in `libxdma.h`:
+
+| Enum | Meaning |
+|---|---|
+| `TRANSFER_STATE_NEW` | Transfer object has not been queued. |
+| `TRANSFER_STATE_SUBMITTED` | Transfer is on the engine queue. |
+| `TRANSFER_STATE_COMPLETED` | Expected descriptors completed. |
+| `TRANSFER_STATE_FAILED` | Hardware or software marked the transfer failed. |
+| `TRANSFER_STATE_ABORTED` | Transfer was removed during timeout/offline handling. |
+
+The DRM driver observes that state only through the return value of
+`xdma_xfer_completion()` and its async callback.

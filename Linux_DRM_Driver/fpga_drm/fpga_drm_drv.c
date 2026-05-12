@@ -57,10 +57,10 @@ module_param(connector_non_desktop, bool, 0644);
 MODULE_PARM_DESC(connector_non_desktop,
 		 "Mark connector as non-desktop. Default is false");
 
-static bool enable_fbdev = true;
+static bool enable_fbdev = false;
 module_param(enable_fbdev, bool, 0644);
 MODULE_PARM_DESC(enable_fbdev,
-		 "Create fbdev client after DRM registration. Default is true.");
+		 "Create fbdev client after DRM registration. Default is false.");
 
 static unsigned int h2c_channel = 0;
 module_param(h2c_channel, uint, 0644);
