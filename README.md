@@ -1,11 +1,11 @@
 # Simple-Display-Controller
-This repo contains Simple Display Contoller FPGA Hardware, Embedded Software and the Linux Host Driver. The controller aims to enable usage of AX7203 DEMO Board as a Display Controller connected to a Linux PC Host. Display data is sent over to the Card via PCIe. The card then outputs the frames via HDMI(DVI Mode).
+This repo contains Simple Display Controller FPGA hardware, embedded software, and the Linux host driver. The controller aims to enable use of the AX7203 demo board as a display controller connected to a Linux host PC. Display data is sent to the card over PCIe, and the card outputs the frames over HDMI in DVI mode.
 
 This is not a general-purpose GPU. It does not render graphics. It is a display scanout path. Linux produces finished pixels, the driver transports them to the FPGA, and the FPGA outputs them as a video
 signal to the monitor.
 
 # Hardware Architecture
-AX7203 Offers 4x PCIe 2.0 lanes which is used as the main data path between the Linux Host PC and the FPGA. Each line of the frame is taken as a AXIS frame from the XDMA PCIe IP to the VDMA IP. VDMA Write Channel then saves the lines to the frame buffers residing on the DDR3 SDRAM. At the same time VDMA Read Channel keeps reading the frames to the Video Output Subsystem. VDMA Write Channel is configured as GENLOCK MASTER and Read Channel is configured as GENLOCK SLAVE such that read channel channel switches frames depending on the availabilatiy of new frames on the write channel.The configuration of the IPs are done with a Microblaze Soft CPU. 
+AX7203 offers 4 PCIe 2.0 lanes used as the main data path between the Linux host PC and the FPGA. Each frame line is transported as one AXI-stream packet from the XDMA PCIe IP to the VDMA IP. The VDMA write channel saves lines into frame buffers in DDR3 SDRAM, while the VDMA read channel continuously feeds the video output subsystem. The VDMA write channel is configured as GENLOCK master and the read channel as GENLOCK slave so the read channel can switch frames as new frames arrive. The Linux DRM driver configures the video IPs through the XDMA AXI-Lite bypass BAR.
 ![Hardware Shematic](doc/visuals/outputs/Hardware_Schematic.drawio.svg)
 
 In this Hardware Architecture, the XDMA IP acts as the master of the transfers. Host PC only configures the DMA descriptor tables on the XDMA and instructs to start the transactions but the transactions are done by the XDMA IP, not the HOST PC.
@@ -14,14 +14,16 @@ In this Hardware Architecture, the XDMA IP acts as the master of the transfers. 
 
 # Current Status of the Project
 ## Linux DRM Driver
-Basic driver with static resolution and frame rate is ready and working. The card and the driver has succesfully been used by the XORG and Display-Manager. Current Linux DRM Driver exposes a PCIe device driver (bound to Xilinx PCIe IDs). No mode setting is available yet, monitor is configured as always connected. The frames are saved first saved into a frame buffer on the PC, then the whole frame is sent over to the card via PCIe.
+The current `fpga_drm.ko` driver is a working fixed-mode DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes one virtual connector, advertises one `1280x720@60` mode, accepts `XRGB8888` framebuffers, and uploads complete frames through the XDMA H2C stream path. The driver also programs the FPGA video pipeline through the XDMA bypass BAR during probe, including pixel unpack, color conversion, VDMA, HDMI I2C, VTC, and video-lock readbacks.
+
+The current bring-up has been validated with `drm_info`, `modetest -M fpga_drm`, and Vivado ILA capture. After a `modetest` SMPTE pattern upload, the video-stream ILA showed active `tvalid && tready` handshakes and nonzero 24-bit pixel data on the HDMI output stream.
 ![Demo Setup](doc/visuals/Demo.png)
 ## Hardware
-Hardware is configured to work on 1280*720 resolution frames at 60 FPS. Configuration of the IPs are done via Microblaze Soft CPU. The pixel format is 32-bit XRGB on the PCIe input side but 24-bit RGB on the HDMI output side.
+Hardware is configured for 1280x720 frames at 60 FPS. Configuration of the IPs is done by `fpga_drm.ko` through the XDMA bypass BAR. The pixel format is 32-bit XRGB on the PCIe input side and 24-bit RGB on the HDMI output side.
 
 # Next Step
 
 ## Hardware
-The Microblaze will be removed from the project. The configuration of the IPs will be done with the SAXI-Lite Master port coming from the XDMA IP.
+Keep the exported `fpga_hardware/PCIe_wrapper/PCIe.hwh` address map synchronized with the Linux driver when the block design changes.
 ## Linux DRM Driver
-The configuration of the IPs will be done inside the Linux DRM driver. 
+Keep the documentation and validation scripts synchronized with the current bypass BAR map and rerun the DRM plus ILA validation flow after bitstream or driver changes.

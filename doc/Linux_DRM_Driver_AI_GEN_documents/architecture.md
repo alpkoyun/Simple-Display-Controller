@@ -14,15 +14,21 @@ frame to the FPGA.
 - One complete frame is 1280 * 720 * 4 = 3,686,400 bytes.
 - The XDMA H2C stream is packetized per video line. The driver submits 720
   line-sized packets for each frame, with EOP/TLAST at the end of each line.
-- The FPGA stores or stages one frame as 720 line buffers before video output.
-- MicroBlaze configures the FPGA video pipeline. This Linux driver does not
-  program clocks, resets, HDMI, VDMA, or custom video IP registers.
+- The FPGA stores incoming pixels in the VDMA DDR frame ring before video
+  output.
+- Linux configures the FPGA video pipeline through the XDMA AXI-Lite bypass
+  BAR in this bitstream. VDMA programming targets `axi_vdma_0` at bypass
+  offset `0x00040000`, using AXI VDMA register offsets rather than XDMA
+  engine/config offsets.
 
 ## Linux Model
 
 `fpga_drm.ko` is a PCI DRM driver. It binds the Xilinx PCIe XDMA function,
 opens the vendored XDMA core with `xdma_device_open()`, and registers one DRM
 device with one virtual connector and one `drm_simple_display_pipe`.
+Before DRM registration it requires a mapped XDMA MMIO BAR and runs
+`fpga_drm_configure_pipeline()` to program pixel unpack, color conversion,
+VDMA S2MM/MM2S frame buffers, HDMI I2C, VTC, and debug readbacks.
 
 Userspace interacts with the driver through standard DRM/KMS APIs:
 
@@ -33,6 +39,17 @@ Userspace interacts with the driver through standard DRM/KMS APIs:
 
 The driver has no private ioctl ABI and does not create the standalone
 `/dev/xdma*` character devices.
+
+The validated userspace path is `drm_info /dev/dri/card0` and
+`modetest -M fpga_drm`. On this host, this `modetest` build does not reliably
+honor `-D /dev/dri/card0`, so the module selector is the preferred direct KMS
+test path.
+
+Vivado ILA validation uses the matching
+`fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx`. The current bitstream exposes a
+video stream ILA at `PCIe_i/hdmi_out/video_stream_ila/inst/ila_lib`; after a
+`modetest -F smpte` upload, the ILA should show `tvalid && tready` handshakes
+and nonzero 24-bit `tdata` values.
 
 ## Frame Upload Model
 
@@ -59,12 +76,13 @@ completion.
 ```text
 connector_connected=1
 connector_non_desktop=0
-enable_fbdev=1
+enable_fbdev=0
 h2c_channel=0
 stream_ep_addr=0
 upload_full_frame=1
 upload_enabled=1
 debug_logging=0
+configure_pipeline=1
 ```
 
 The FPGA PCIe function should enumerate as a display-class device for normal

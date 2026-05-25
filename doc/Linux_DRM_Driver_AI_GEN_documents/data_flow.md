@@ -2,11 +2,14 @@
 
 ## Frame Upload Flow
 
-The DRM driver moves pixels from a GEM SHMEM framebuffer into FPGA line buffers
-and submits the whole frame to XDMA asynchronously.
+During probe, the DRM driver first configures the FPGA video path through the
+XDMA bypass BAR. At runtime it moves pixels from a GEM SHMEM framebuffer into
+host line buffers and submits the whole frame to XDMA asynchronously.
 
 ```mermaid
 flowchart LR
+    Probe[fpga_drm_probe] --> Pipeline[configure video IPs through XDMA bypass BAR]
+    Pipeline --> VDMA[VDMA frame ring in DDR]
     App[DRM userspace compositor or test app] --> DRM[DRM atomic commit]
     DRM --> Plane[Shadow plane map]
     Plane --> CB[fpga_drm_pipe_enable/update]
@@ -18,7 +21,8 @@ flowchart LR
     SGT --> Submit[xdma_xfer_submit_lines_nowait]
     Submit --> Desc[XDMA descriptors with EOP per line]
     Desc --> PCIe[PCIe DMA reads host line buffers]
-    PCIe --> FPGA[FPGA H2C AXI-stream sink]
+    PCIe --> FPGA[VDMA S2MM H2C AXI-stream sink]
+    FPGA --> VDMA
 ```
 
 ## Ownership

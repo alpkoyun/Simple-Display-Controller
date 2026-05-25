@@ -10,7 +10,7 @@ or has registered managed cleanup.
 |---|---|---|
 | `devm_drm_dev_alloc()` | `PTR_ERR(fpga)` | Device-managed allocation handles partial state. |
 | `fpga_drm_alloc_frame_buffers()` | `-ENOMEM` or SG allocation error | DRM-managed line buffers; `frame_sgt` cleanup is registered after allocation. |
-| `fpga_drm_open_xdma()` | `-ENODEV`, invalid channel, or managed action failure | Helper closes XDMA on invalid channel; action-or-reset closes on action registration failure. |
+| `fpga_drm_open_xdma()` | `-ENODEV`, missing MMIO BAR, invalid channel, or managed action failure | Helper closes XDMA on missing BAR or invalid channel; action-or-reset closes on action registration failure. |
 | `fpga_drm_modeset_init()` | DRM helper error | DRM-managed mode config where applicable. |
 | `drm_dev_register()` | DRM registration error | Managed cleanup on probe unwind. |
 | `drm_fbdev_generic_setup()` | Return value not checked | Generic fbdev helper behavior; called only when `enable_fbdev=1`. |

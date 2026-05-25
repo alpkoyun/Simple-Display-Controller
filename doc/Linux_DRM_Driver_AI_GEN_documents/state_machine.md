@@ -13,7 +13,8 @@ stateDiagram-v2
     PCIRegistered --> Probing: PCI match
     Probing --> FrameBuffersReady: fpga_drm_alloc_frame_buffers
     FrameBuffersReady --> XDMAOpen: fpga_drm_open_xdma
-    XDMAOpen --> KMSReady: fpga_drm_modeset_init
+    XDMAOpen --> PipelineConfigured: fpga_drm_configure_pipeline
+    PipelineConfigured --> KMSReady: fpga_drm_modeset_init
     KMSReady --> DRMRegistered: drm_dev_register
     DRMRegistered --> ConnectorConnected: default connector mode
     DRMRegistered --> ConnectorDisconnected: diagnostic disconnected override
@@ -36,7 +37,8 @@ stateDiagram-v2
 | State | Meaning |
 |---|---|
 | `FrameBuffersReady` | 720 line buffers and `frame_sgt` have been allocated. |
-| `XDMAOpen` | `xdma_device_open()` succeeded and the selected H2C channel is valid. |
+| `XDMAOpen` | `xdma_device_open()` succeeded, the bypass BAR is selected for MMIO, and the selected H2C channel is valid. |
+| `PipelineConfigured` | Pixel unpack, color convert, VDMA, HDMI I2C, VTC, and video-lock registers have been programmed through the bypass BAR. |
 | `KMSReady` | Mode config, virtual connector, and simple display pipe exist. |
 | `DRMRegistered` | Userspace can see `/dev/dri/cardN`. |
 | `ConnectorConnected` | The driver advertises the fixed 1280x720 mode. This is the default. |

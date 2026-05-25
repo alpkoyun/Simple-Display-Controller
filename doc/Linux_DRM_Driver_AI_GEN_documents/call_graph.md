@@ -5,6 +5,7 @@
 | Entry point | Role |
 |---|---|
 | `fpga_drm_probe()` | PCI probe and DRM/XDMA initialization. |
+| `fpga_drm_configure_pipeline()` | Host-side FPGA video-IP setup through the XDMA bypass BAR. |
 | `fpga_drm_remove()` | PCI remove and upload shutdown. |
 | `fpga_drm_shutdown()` | System shutdown KMS cleanup. |
 | `fpga_drm_pipe_enable()` | DRM atomic enable callback. |
@@ -26,7 +27,12 @@ flowchart TD
     B --> H[fpga_drm_open_xdma]
     H --> I[xdma_device_open]
     I --> J[enable PCI and map BARs]
+    H --> U[select bypass BAR for AXI-Lite MMIO]
     I --> K[probe engines and setup IRQs]
+    B --> Q[fpga_drm_configure_pipeline]
+    Q --> R[program pixel unpack and color convert]
+    Q --> S[program VDMA at 0x00040000]
+    Q --> T[program HDMI I2C and VTC]
     B --> L[fpga_drm_modeset_init]
     L --> M[drm_connector_init]
     L --> N[drm_simple_display_pipe_init]

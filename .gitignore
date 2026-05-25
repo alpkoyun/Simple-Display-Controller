@@ -1,2 +1,7 @@
 fpga_hardware
 linux
+tmp_hw_probe/
+*.cmd
+codex.log
+tmp_fpga_drm_probe
+tmp_ila_capture

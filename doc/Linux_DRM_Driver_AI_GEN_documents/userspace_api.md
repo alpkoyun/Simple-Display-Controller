@@ -39,12 +39,13 @@ but it is not the primary desktop integration path.
 |---|---|---:|---|
 | `connector_connected` | bool | `true` | Reports the virtual connector as connected and advertises the fixed mode. |
 | `connector_non_desktop` | bool | `false` | Sets the connector non-desktop property. |
-| `enable_fbdev` | bool | `true` | Creates generic fbdev after DRM registration. |
+| `enable_fbdev` | bool | `false` | Creates generic fbdev after DRM registration. |
 | `h2c_channel` | uint | `0` | XDMA H2C channel used for frame uploads. |
 | `stream_ep_addr` | ullong | `0` | Endpoint address passed into XDMA descriptors. |
 | `upload_full_frame` | bool | `true` | Uploads the full 1280x720 frame on every update. |
 | `upload_enabled` | bool | `true` | Enables XDMA frame upload; set to false for DRM-only diagnostics. |
 | `debug_logging` | bool | `false` | Enables extra connector, modeset, upload, and DMA logs. |
+| `configure_pipeline` | bool | `true` | Programs FPGA video IPs through the XDMA bypass BAR during probe. |
 
 Because `libxdma.c` is linked into `fpga_drm.ko`, its module parameters are
 also present. The most relevant are `poll_mode`, `interrupt_mode`,
@@ -65,16 +66,33 @@ connector exposes one 1280x720 mode when `connector_connected=1`.
 
 ## Direct KMS Test
 
-Use the FPGA card explicitly. Card numbers can vary.
+Use the FPGA driver explicitly. Card numbers can vary, and on this host the
+installed `modetest` build does not reliably honor `-D /dev/dri/card0`.
+`drm_info` can open the card path directly; `modetest` should use
+`-M fpga_drm`.
 
 ```sh
+drm_info /dev/dri/card0
 modetest -M fpga_drm -c -p
-modetest -M fpga_drm -s <connector_id>@<crtc_id>:1280x720-60 -F tiles
+modetest -M fpga_drm -s 31@34:1280x720-60@XR24
+modetest -M fpga_drm -s 31@34:1280x720-60 -P 32@34:1280x720+0+0@XR24 -F smpte
 ```
 
-If `modetest` reports `Permission denied` during modeset/page-flip, another
-process owns DRM master for that card. That behavior is normal DRM ownership
-semantics, not a private driver error.
+Validated current object IDs are connector `31`, CRTC `34`, and primary plane
+`32`. Reconfirm them with `modetest -M fpga_drm -c -p` after reloads or driver
+changes.
+
+If `drm_info /dev/dri/card0` reports `Permission denied`, fix the device-node
+ACL first:
+
+```sh
+getfacl /dev/dri/card0
+sudo setfacl -m u:alpk:rw /dev/dri/card0
+```
+
+If userspace can open the card but `modetest` reports `Permission denied`
+during modeset/page-flip, another process owns DRM master for that card. That
+behavior is normal DRM ownership semantics, not a private driver error.
 
 ## Standalone XDMA Interfaces
 

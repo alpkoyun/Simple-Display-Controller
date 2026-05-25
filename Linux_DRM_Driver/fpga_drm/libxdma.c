@@ -4861,6 +4861,64 @@ free_xdev:
 	return NULL;
 }
 
+void __iomem *xdma_device_user_bar(void *dev_hndl)
+{
+	struct xdma_dev *xdev = dev_hndl;
+
+	if (!xdev || xdev->user_bar_idx < 0 ||
+	    xdev->user_bar_idx >= XDMA_BAR_NUM)
+		return NULL;
+
+	return xdev->bar[xdev->user_bar_idx];
+}
+
+int xdma_device_user_bar_info(void *dev_hndl, int *bar_idx,
+			      resource_size_t *bar_len)
+{
+	struct xdma_dev *xdev = dev_hndl;
+
+	if (!xdev || xdev->user_bar_idx < 0 ||
+	    xdev->user_bar_idx >= XDMA_BAR_NUM ||
+	    !xdev->bar[xdev->user_bar_idx])
+		return -ENODEV;
+
+	if (bar_idx)
+		*bar_idx = xdev->user_bar_idx;
+	if (bar_len)
+		*bar_len = pci_resource_len(xdev->pdev, xdev->user_bar_idx);
+
+	return 0;
+}
+
+void __iomem *xdma_device_bypass_bar(void *dev_hndl)
+{
+	struct xdma_dev *xdev = dev_hndl;
+
+	if (!xdev || xdev->bypass_bar_idx < 0 ||
+	    xdev->bypass_bar_idx >= XDMA_BAR_NUM)
+		return NULL;
+
+	return xdev->bar[xdev->bypass_bar_idx];
+}
+
+int xdma_device_bypass_bar_info(void *dev_hndl, int *bar_idx,
+				resource_size_t *bar_len)
+{
+	struct xdma_dev *xdev = dev_hndl;
+
+	if (!xdev || xdev->bypass_bar_idx < 0 ||
+	    xdev->bypass_bar_idx >= XDMA_BAR_NUM ||
+	    !xdev->bar[xdev->bypass_bar_idx])
+		return -ENODEV;
+
+	if (bar_idx)
+		*bar_idx = xdev->bypass_bar_idx;
+	if (bar_len)
+		*bar_len = pci_resource_len(xdev->pdev, xdev->bypass_bar_idx);
+
+	return 0;
+}
+
 void xdma_device_close(struct pci_dev *pdev, void *dev_hndl)
 {
 	struct xdma_dev *xdev = (struct xdma_dev *)dev_hndl;

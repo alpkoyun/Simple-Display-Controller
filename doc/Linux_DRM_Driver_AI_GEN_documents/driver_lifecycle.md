@@ -6,9 +6,9 @@
 |---|---|---|
 | Module load | `module_pci_driver(fpga_drm_pci_driver)` | Registers the PCI driver. |
 | PCI match | `fpga_drm_pci_ids` | Matches supported Xilinx XDMA device IDs. |
-| Probe | `fpga_drm_probe()` | Allocates DRM state, initializes upload/DMA state, allocates frame buffers, opens XDMA, initializes KMS, and registers DRM. |
+| Probe | `fpga_drm_probe()` | Allocates DRM state, initializes upload/DMA state, allocates frame buffers, opens XDMA, configures the FPGA video pipeline, initializes KMS, and registers DRM. |
 | Userspace visible | `drm_dev_register()` | Creates `/dev/dri/cardN` and DRM sysfs entries. |
-| fbdev setup | `drm_fbdev_generic_setup(drm, 32)` | Runs when `enable_fbdev=1`, the current default. |
+| fbdev setup | `drm_fbdev_generic_setup(drm, 32)` | Runs only when `enable_fbdev=1`; the current default is disabled. |
 
 Standalone `xdma.ko` has a separate lifecycle and creates `/dev/xdma*` nodes.
 It should not own the same PCI function while `fpga_drm.ko` is loaded.
@@ -21,6 +21,8 @@ It should not own the same PCI function while `fpga_drm.ko` is loaded.
 | Initialize locks/work | `mutex_init()`, `spin_lock_init()`, `init_waitqueue_head()`, `INIT_WORK()`, `INIT_DELAYED_WORK()` |
 | Allocate frame staging | `fpga_drm_alloc_frame_buffers()` |
 | Open XDMA | `fpga_drm_open_xdma()` then `xdma_device_open()` |
+| Select MMIO BAR | `xdma_device_bypass_bar()` and `xdma_device_bypass_bar_info()`; user BAR is only a fallback for other designs. |
+| Configure video pipeline | `fpga_drm_configure_pipeline()` through the selected XDMA MMIO BAR; this bitstream uses the bypass BAR. |
 | Initialize KMS | `fpga_drm_modeset_init()` |
 | Bind PCI data | `pci_set_drvdata(pdev, drm)` |
 | Register DRM device | `drm_dev_register(drm, 0)` |

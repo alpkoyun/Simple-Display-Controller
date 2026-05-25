@@ -44,8 +44,9 @@ display manager did not expose it as a normal desktop display.
 so the desktop stack did not treat it like a normal display adapter.
 
 **Fix:** The FPGA PCIe function should enumerate as display class. The current
-driver defaults also expose the connector as connected, desktop-capable, and
-fbdev-enabled.
+driver defaults expose the connector as connected and desktop-capable. Generic
+fbdev is available through `enable_fbdev=1`, but the current default is
+disabled.
 
 **Current status:** Resolved as a platform/bitstream integration requirement.
 Stopping the display manager is now only a manual KMS diagnostic step.
@@ -58,9 +59,12 @@ Stopping the display manager is now only a manual KMS diagnostic step.
 **Cause:** Another process, usually the compositor or display manager, already
 owned DRM master for the target card.
 
-**Fix:** For direct `modetest` runs, target the FPGA card explicitly and run
-from a text console or stop the display manager temporarily. Check owners with
-`sudo fuser -v /dev/dri/card*`.
+**Fix:** First make sure the user can open `/dev/dri/card0`; a missing ACL also
+appears as `Permission denied`. Use `getfacl /dev/dri/card0` and, when needed,
+`sudo setfacl -m u:alpk:rw /dev/dri/card0`. For direct `modetest` runs, target
+the FPGA driver with `modetest -M fpga_drm`. Run from a text console or stop
+the display manager temporarily only when the card opens but DRM master is
+owned by another process. Check owners with `sudo fuser -v /dev/dri/card*`.
 
 **Current status:** Expected DRM ownership behavior. It is not treated as a
 driver architecture problem.

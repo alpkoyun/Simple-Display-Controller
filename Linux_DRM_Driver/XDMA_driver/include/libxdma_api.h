@@ -65,6 +65,13 @@ typedef struct {
 void *xdma_device_open(const char *mod_name, struct pci_dev *pdev,
 		 int *user_max, int *h2c_channel_max, int *c2h_channel_max);
 
+void __iomem *xdma_device_user_bar(void *dev_handle);
+int xdma_device_user_bar_info(void *dev_handle, int *bar_idx,
+			      resource_size_t *bar_len);
+void __iomem *xdma_device_bypass_bar(void *dev_handle);
+int xdma_device_bypass_bar_info(void *dev_handle, int *bar_idx,
+				resource_size_t *bar_len);
+
 /* 
  * xdma_device_close - prepare fpga for removal: disable all interrupts (users
  * and xdma) and release all resources
