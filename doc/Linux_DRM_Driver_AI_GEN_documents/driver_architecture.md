@@ -20,7 +20,7 @@ uses the vendored XDMA core to transfer the committed framebuffer to the FPGA.
 
 | Contract | Current implementation |
 |---|---|
-| Display modes | `fpga_video_modes[]` advertises common 60 Hz timings up to `1920x1080@60` and `148.5 MHz`. |
+| Display modes | `fpga_video_modes[]` advertises common 30 Hz and 60 Hz timings up to `1920x1080@60` and `148.5 MHz`. |
 | Pixel format | `fpga_drm_formats[]` advertises `DRM_FORMAT_XRGB8888`; `fpga_drm_copy_frame()` validates format and size. |
 | Frame staging | `fpga_drm_alloc_frame_buffers()` allocates 1080 max-width line buffers and one max-height `frame_sgt`; submit uses an active-mode SG view. |
 | Video-IP setup | `fpga_drm_configure_static_pipeline()` programs static IP state; `fpga_drm_program_mode()` programs clock wizard, VDMA, VTC, and debug readbacks. |

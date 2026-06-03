@@ -22,7 +22,7 @@ parameters.
 |---|---|
 | Connector type | `DRM_MODE_CONNECTOR_VIRTUAL`. |
 | Connection status | Controlled by `connector_connected`; default connected. |
-| Mode list | Whitelist of common 60 Hz modes up to `148.5 MHz`. |
+| Mode list | Whitelist of common 30 Hz and 60 Hz modes up to `148.5 MHz`. |
 | Mode validation | Rejects modes outside the whitelist or above `148.5 MHz`. |
 | Format | `DRM_FORMAT_XRGB8888` only. |
 | Modifier | Linear only. |
@@ -34,15 +34,25 @@ Supported connector modes:
 | Mode | Pixel clock |
 |---|---:|
 | `640x480@60` | `25.175 MHz` |
+| `640x480@30` | `12.587 MHz` |
 | `800x600@60` | `40.000 MHz` |
+| `800x600@30` | `20.000 MHz` |
 | `1024x768@60` | `65.000 MHz` |
+| `1024x768@30` | `32.500 MHz` |
 | `1280x720@60` | `74.250 MHz` |
+| `1280x720@30` | `37.125 MHz` |
 | `1280x1024@60` | `108.000 MHz` |
+| `1280x1024@30` | `54.000 MHz` |
 | `1920x1080@60` | `148.500 MHz` |
+| `1920x1080@30` | `74.250 MHz` |
 
 Userspace switches resolution through normal KMS modesets. On enable/modeset,
 the driver stops outstanding uploads, programs the video clock wizard, VTC, and
 VDMA for the selected mode, and resumes active-size frame uploads.
+The 30 Hz modes use the same active resolution and timing totals as their
+matching 60 Hz modes with the pixel clock halved. They reduce display-stream
+bandwidth, but a full-frame PCIe upload still transfers
+`active_width * active_height * 4` bytes.
 
 With the FPGA enumerated as a display-class PCI device and the defaults below,
 normal desktop stacks should be able to see the output through `xrandr` or the
@@ -99,6 +109,7 @@ For other advertised modes, replace both the mode and plane size in the
 
 ```sh
 modetest -M fpga_drm -s 31@34:1920x1080-60 -P 32@34:1920x1080+0+0@XR24 -F smpte
+modetest -M fpga_drm -s 31@34:1920x1080-30 -P 32@34:1920x1080+0+0@XR24 -F smpte
 ```
 
 Validated current object IDs are connector `31`, CRTC `34`, and primary plane

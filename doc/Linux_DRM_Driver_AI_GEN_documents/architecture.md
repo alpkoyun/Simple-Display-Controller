@@ -6,8 +6,8 @@ while using XDMA H2C AXI-stream to deliver each rendered frame to the FPGA.
 
 ## Current Contract
 
-- Supported modes are `640x480@60`, `800x600@60`, `1024x768@60`,
-  `1280x720@60`, `1280x1024@60`, and `1920x1080@60`.
+- Supported modes are `640x480`, `800x600`, `1024x768`, `1280x720`,
+  `1280x1024`, and `1920x1080`, each at 60 Hz and nominal 30 Hz.
 - The maximum advertised pixel clock is `148.5 MHz`.
 - The only supported framebuffer format is `DRM_FORMAT_XRGB8888`.
 - The FPGA consumes 32-bit pixels. Bits 31:24 are ignored; RGB is carried in

@@ -14,23 +14,30 @@ In this Hardware Architecture, the XDMA IP acts as the master of the transfers. 
 
 # Current Status of the Project
 ## Linux DRM Driver
-The current `fpga_drm.ko` driver is a whitelist-based DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes one virtual connector, advertises common 60 Hz modes up to a `148.5 MHz` pixel clock, accepts `XRGB8888` framebuffers, and uploads complete frames through the XDMA H2C stream path. Userspace changes resolution with normal KMS modesets; the driver then reprograms the video clock wizard, VTC, and VDMA for the selected mode through the XDMA bypass BAR.
+The current `fpga_drm.ko` driver is a whitelist-based DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes one virtual connector, advertises common 30 Hz and 60 Hz modes up to a `148.5 MHz` pixel clock, accepts `XRGB8888` framebuffers, and uploads complete frames through the XDMA H2C stream path. Userspace changes resolution with normal KMS modesets; the driver then reprograms the video clock wizard, VTC, and VDMA for the selected mode through the XDMA bypass BAR.
 
 Supported modes:
 
 | Mode | Pixel clock |
 |---|---:|
 | `640x480@60` | `25.175 MHz` |
+| `640x480@30` | `12.587 MHz` |
 | `800x600@60` | `40.000 MHz` |
+| `800x600@30` | `20.000 MHz` |
 | `1024x768@60` | `65.000 MHz` |
+| `1024x768@30` | `32.500 MHz` |
 | `1280x720@60` | `74.250 MHz` |
+| `1280x720@30` | `37.125 MHz` |
 | `1280x1024@60` | `108.000 MHz` |
+| `1280x1024@30` | `54.000 MHz` |
 | `1920x1080@60` | `148.500 MHz` |
+| `1920x1080@30` | `74.250 MHz` |
 
 The current bring-up has been validated with `drm_info`, `modetest -M fpga_drm`, and Vivado ILA capture. After a `modetest` SMPTE pattern upload, the video-stream ILA showed active `tvalid && tready` handshakes and nonzero 24-bit pixel data on the HDMI output stream.
+The 30 Hz modes keep the same active resolution as their 60 Hz counterparts and lower the video pixel clock; they reduce display-stream bandwidth, but each full-frame PCIe upload still carries `active_width * active_height * 4` bytes.
 ![Demo Setup](doc/visuals/Demo.png)
 ## Hardware
-Hardware supports the driver whitelist up to `1920x1080@60`. Configuration of the IPs is done by `fpga_drm.ko` through the XDMA bypass BAR. The pixel format is 32-bit XRGB on the PCIe input side and 24-bit RGB on the HDMI output side.
+Hardware supports the driver whitelist up to `1920x1080@60` and the lower-clock 30 Hz variants. Configuration of the IPs is done by `fpga_drm.ko` through the XDMA bypass BAR. The pixel format is 32-bit XRGB on the PCIe input side and 24-bit RGB on the HDMI output side.
 
 # Next Step
 

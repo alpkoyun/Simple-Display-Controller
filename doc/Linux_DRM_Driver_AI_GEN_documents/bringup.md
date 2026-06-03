@@ -59,11 +59,17 @@ The FPGA should appear as a DRM card with these connector modes:
 | Mode | Pixel clock |
 |---|---:|
 | `640x480@60` | `25.175 MHz` |
+| `640x480@30` | `12.587 MHz` |
 | `800x600@60` | `40.000 MHz` |
+| `800x600@30` | `20.000 MHz` |
 | `1024x768@60` | `65.000 MHz` |
+| `1024x768@30` | `32.500 MHz` |
 | `1280x720@60` | `74.250 MHz` |
+| `1280x720@30` | `37.125 MHz` |
 | `1280x1024@60` | `108.000 MHz` |
+| `1280x1024@30` | `54.000 MHz` |
 | `1920x1080@60` | `148.500 MHz` |
+| `1920x1080@30` | `74.250 MHz` |
 
 If the desktop stack does not list it, verify that the FPGA PCIe function
 enumerates as a display-class device and that `fpga_drm.ko` owns the PCI
@@ -84,7 +90,8 @@ modetest -M fpga_drm -s 31@34:1280x720-60 -P 32@34:1280x720+0+0@XR24 -F smpte
 
 For mode smoke testing, repeat the `-s`/`-P` pair with each advertised mode and
 the matching plane size, for example `1920x1080-60@XR24` and
-`1920x1080+0+0@XR24`.
+`1920x1080+0+0@XR24`. To test the lower-bandwidth 1080p path, use
+`1920x1080-30@XR24` with the same `1920x1080+0+0@XR24` plane size.
 
 `failed to set gamma: Function not implemented` is acceptable for this minimal
 driver when the mode set proceeds.
