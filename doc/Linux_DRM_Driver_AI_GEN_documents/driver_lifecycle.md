@@ -6,7 +6,7 @@
 |---|---|---|
 | Module load | `module_pci_driver(fpga_drm_pci_driver)` | Registers the PCI driver. |
 | PCI match | `fpga_drm_pci_ids` | Matches supported Xilinx XDMA device IDs. |
-| Probe | `fpga_drm_probe()` | Allocates DRM state, initializes upload/DMA state, allocates frame buffers, opens XDMA, configures the FPGA video pipeline, initializes KMS, and registers DRM. |
+| Probe | `fpga_drm_probe()` | Allocates DRM state, initializes upload/DMA state, allocates max-mode frame buffers, opens XDMA, configures static FPGA video IP state, initializes KMS, and registers DRM. |
 | Userspace visible | `drm_dev_register()` | Creates `/dev/dri/cardN` and DRM sysfs entries. |
 | fbdev setup | `drm_fbdev_generic_setup(drm, 32)` | Runs only when `enable_fbdev=1`; the current default is disabled. |
 
@@ -22,7 +22,7 @@ It should not own the same PCI function while `fpga_drm.ko` is loaded.
 | Allocate frame staging | `fpga_drm_alloc_frame_buffers()` |
 | Open XDMA | `fpga_drm_open_xdma()` then `xdma_device_open()` |
 | Select MMIO BAR | `xdma_device_bypass_bar()` and `xdma_device_bypass_bar_info()`; user BAR is only a fallback for other designs. |
-| Configure video pipeline | `fpga_drm_configure_pipeline()` through the selected XDMA MMIO BAR; this bitstream uses the bypass BAR. |
+| Configure static video IPs | `fpga_drm_configure_static_pipeline()` through the selected XDMA MMIO BAR; this bitstream uses the bypass BAR. |
 | Initialize KMS | `fpga_drm_modeset_init()` |
 | Bind PCI data | `pci_set_drvdata(pdev, drm)` |
 | Register DRM device | `drm_dev_register(drm, 0)` |
@@ -47,8 +47,9 @@ sequenceDiagram
     participant Driver as fpga_drm
     participant WQ as upload_work
     participant XDMA as libxdma
-    App->>Core: open /dev/dri/cardN and commit 1280x720 fb
+    App->>Core: open /dev/dri/cardN and commit supported-mode fb
     Core->>Driver: fpga_drm_pipe_enable/update
+    Driver->>Driver: fpga_drm_program_mode on enable/modeset
     Driver->>Driver: fpga_drm_mark_dirty
     Driver->>WQ: schedule upload_work
     WQ->>Driver: fpga_drm_copy_frame

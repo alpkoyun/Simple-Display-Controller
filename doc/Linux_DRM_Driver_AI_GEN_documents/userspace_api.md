@@ -3,9 +3,10 @@
 ## `fpga_drm.ko`
 
 `fpga_drm.ko` exposes a standard DRM/KMS display. Userspace should treat it as
-a fixed 1280x720 display with one virtual connector. There are no private DRM
-ioctls, no private character devices, no local debugfs files, and no custom
-sysfs ABI beyond module parameters.
+a normal modeset-capable display with one virtual connector and a whitelist of
+supported timings. There are no private DRM ioctls, no private character
+devices, no local debugfs files, and no custom sysfs ABI beyond module
+parameters.
 
 | Interface | Status |
 |---|---|
@@ -21,12 +22,27 @@ sysfs ABI beyond module parameters.
 |---|---|
 | Connector type | `DRM_MODE_CONNECTOR_VIRTUAL`. |
 | Connection status | Controlled by `connector_connected`; default connected. |
-| Mode list | One fixed 1280x720@60 mode. |
-| Mode validation | Rejects anything except 1280x720 at 60 Hz. |
+| Mode list | Whitelist of common 60 Hz modes up to `148.5 MHz`. |
+| Mode validation | Rejects modes outside the whitelist or above `148.5 MHz`. |
 | Format | `DRM_FORMAT_XRGB8888` only. |
 | Modifier | Linear only. |
 | Non-desktop property | Controlled by `connector_non_desktop`; default false. |
 | Updates | Full-frame upload by default through `upload_full_frame=1`. |
+
+Supported connector modes:
+
+| Mode | Pixel clock |
+|---|---:|
+| `640x480@60` | `25.175 MHz` |
+| `800x600@60` | `40.000 MHz` |
+| `1024x768@60` | `65.000 MHz` |
+| `1280x720@60` | `74.250 MHz` |
+| `1280x1024@60` | `108.000 MHz` |
+| `1920x1080@60` | `148.500 MHz` |
+
+Userspace switches resolution through normal KMS modesets. On enable/modeset,
+the driver stops outstanding uploads, programs the video clock wizard, VTC, and
+VDMA for the selected mode, and resumes active-size frame uploads.
 
 With the FPGA enumerated as a display-class PCI device and the defaults below,
 normal desktop stacks should be able to see the output through `xrandr` or the
@@ -37,15 +53,15 @@ but it is not the primary desktop integration path.
 
 | Parameter | Type | Default | Effect |
 |---|---|---:|---|
-| `connector_connected` | bool | `true` | Reports the virtual connector as connected and advertises the fixed mode. |
+| `connector_connected` | bool | `true` | Reports the virtual connector as connected and advertises the whitelist modes. |
 | `connector_non_desktop` | bool | `false` | Sets the connector non-desktop property. |
 | `enable_fbdev` | bool | `false` | Creates generic fbdev after DRM registration. |
 | `h2c_channel` | uint | `0` | XDMA H2C channel used for frame uploads. |
 | `stream_ep_addr` | ullong | `0` | Endpoint address passed into XDMA descriptors. |
-| `upload_full_frame` | bool | `true` | Uploads the full 1280x720 frame on every update. |
+| `upload_full_frame` | bool | `true` | Uploads the full active-mode frame on every update. |
 | `upload_enabled` | bool | `true` | Enables XDMA frame upload; set to false for DRM-only diagnostics. |
 | `debug_logging` | bool | `false` | Enables extra connector, modeset, upload, and DMA logs. |
-| `configure_pipeline` | bool | `true` | Programs FPGA video IPs through the XDMA bypass BAR during probe. |
+| `configure_pipeline` | bool | `true` | Programs FPGA video IPs through the XDMA bypass BAR during probe and modeset. |
 
 Because `libxdma.c` is linked into `fpga_drm.ko`, its module parameters are
 also present. The most relevant are `poll_mode`, `interrupt_mode`,
@@ -62,7 +78,7 @@ xrandr
 ```
 
 Expected result: the FPGA card appears as a DRM device, and the virtual
-connector exposes one 1280x720 mode when `connector_connected=1`.
+connector exposes the supported-mode whitelist when `connector_connected=1`.
 
 ## Direct KMS Test
 
@@ -76,6 +92,13 @@ drm_info /dev/dri/card0
 modetest -M fpga_drm -c -p
 modetest -M fpga_drm -s 31@34:1280x720-60@XR24
 modetest -M fpga_drm -s 31@34:1280x720-60 -P 32@34:1280x720+0+0@XR24 -F smpte
+```
+
+For other advertised modes, replace both the mode and plane size in the
+`modetest` command, for example:
+
+```sh
+modetest -M fpga_drm -s 31@34:1920x1080-60 -P 32@34:1920x1080+0+0@XR24 -F smpte
 ```
 
 Validated current object IDs are connector `31`, CRTC `34`, and primary plane

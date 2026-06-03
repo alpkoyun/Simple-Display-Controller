@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Fixed-mode DRM/KMS driver for the FPGA PCIe HDMI stream design.
+ * Multi-mode DRM/KMS driver for the FPGA PCIe HDMI stream design.
  *
- * The FPGA accepts XDMA H2C AXI-stream packets. Each packet is one 1280 pixel
- * scanline in XRGB8888 format, so TLAST must occur once per line.
+ * The FPGA accepts XDMA H2C AXI-stream packets. Each packet is one active
+ * XRGB8888 scanline, so TLAST must occur once per line.
  */
 
 #include <linux/module.h>
@@ -38,19 +38,21 @@
 #include "libxdma.h"
 
 #define DRIVER_NAME	"fpga_drm"
-#define DRIVER_DESC	"FPGA PCIe XDMA fixed-mode DRM driver"
+#define DRIVER_DESC	"FPGA PCIe XDMA multi-mode DRM driver"
 #define DRIVER_MAJOR	0
-#define DRIVER_MINOR	1
+#define DRIVER_MINOR	2
 
-#define FPGA_DRM_WIDTH		1280
-#define FPGA_DRM_HEIGHT		720
+#define FPGA_DRM_MAX_WIDTH	1920
+#define FPGA_DRM_MAX_HEIGHT	1080
 #define FPGA_DRM_BPP		4
-#define FPGA_DRM_LINE_BYTES	(FPGA_DRM_WIDTH * FPGA_DRM_BPP)
-#define FPGA_DRM_FRAME_BYTES	(FPGA_DRM_LINE_BYTES * FPGA_DRM_HEIGHT)
+#define FPGA_DRM_MAX_LINE_BYTES	(FPGA_DRM_MAX_WIDTH * FPGA_DRM_BPP)
+#define FPGA_DRM_MAX_FRAME_BYTES	\
+	(FPGA_DRM_MAX_LINE_BYTES * FPGA_DRM_MAX_HEIGHT)
 #define FPGA_DRM_TIMEOUT_MS	1000
+#define FPGA_DRM_MAX_PIXEL_CLOCK_KHZ	148500
 
 #define FPGA_HW_FRAME_COUNT		4U
-#define FPGA_HW_FRAME_SPACING		(FPGA_DRM_FRAME_BYTES + 0x1000U)
+#define FPGA_HW_FRAME_SPACING		(FPGA_DRM_MAX_FRAME_BYTES + 0x1000U)
 #define FPGA_HW_FRAME_BASE		0x81000000ULL
 
 #define FPGA_HW_COLOR_CONVERT_BASE	0x00000000ULL
@@ -124,12 +126,34 @@
 #define VTC_CTL_GE			BIT(2)
 #define VTC_CTL_RU			BIT(1)
 #define VTC_CTL_SW			BIT(0)
-#define VTC_POL_ALL			0x7F
+#define VTC_POL_VBLANK			BIT(0)
+#define VTC_POL_HBLANK			BIT(1)
+#define VTC_POL_VSYNC			BIT(2)
+#define VTC_POL_HSYNC			BIT(3)
+#define VTC_POL_ACTIVE_VIDEO		BIT(4)
+#define VTC_POL_ACTIVE_CHROMA		BIT(5)
+#define VTC_POL_FIELD_ID		BIT(6)
+#define VTC_POL_BASE			(VTC_POL_VBLANK | VTC_POL_HBLANK | \
+					 VTC_POL_ACTIVE_VIDEO | \
+					 VTC_POL_ACTIVE_CHROMA | \
+					 VTC_POL_FIELD_ID)
 
 #define AXI_GPIO_DATA_CH1		0x00
 #define AXI_GPIO_TRI_CH1		0x04
 #define AXI_GPIO_DATA_CH2		0x08
 #define AXI_GPIO_TRI_CH2		0x0C
+
+#define CLK_WIZ_SR			0x004
+#define CLK_WIZ_CFG0			0x200
+#define CLK_WIZ_CFG1			0x204
+#define CLK_WIZ_CFG2			0x208
+#define CLK_WIZ_CFG3			0x20C
+#define CLK_WIZ_CFG4			0x210
+#define CLK_WIZ_CFG23			0x25C
+#define CLK_WIZ_SR_LOCKED		BIT(0)
+#define CLK_WIZ_CFG23_LOAD		BIT(0)
+#define CLK_WIZ_CFG23_SADDR		BIT(1)
+#define CLK_WIZ_DUTY_50		50000
 
 #define AXI_IIC_RESETR			0x040
 #define AXI_IIC_CR			0x100
@@ -187,10 +211,12 @@ MODULE_PARM_DESC(debug_logging,
 static bool configure_pipeline = true;
 module_param(configure_pipeline, bool, 0644);
 MODULE_PARM_DESC(configure_pipeline,
-		 "Configure FPGA video IPs through XDMA MMIO BAR during probe. Default is true.");
+		 "Configure FPGA video IPs through XDMA MMIO BAR during probe and modeset. Default is true.");
 
 unsigned int h2c_timeout = 10;
 unsigned int c2h_timeout = 10;
+
+struct fpga_video_mode;
 
 struct fpga_drm_device {
 	struct drm_device drm;
@@ -218,11 +244,13 @@ struct fpga_drm_device {
 	struct drm_rect upload_rect;
 	struct iosys_map upload_map;
 	bool pipe_enabled;
+	const struct fpga_video_mode *active_mode;
 
 	struct sg_table frame_sgt;
+	struct sg_table active_frame_sgt;
 	bool frame_sgt_ready;
 	struct xdma_io_cb frame_cb;
-	u8 *line_bufs[FPGA_DRM_HEIGHT];
+	u8 *line_bufs[FPGA_DRM_MAX_HEIGHT];
 	bool dma_inflight;
 	bool dma_completion_pending;
 	bool upload_pending;
@@ -237,21 +265,113 @@ static struct fpga_drm_device *to_fpga(struct drm_device *drm)
 	return container_of(drm, struct fpga_drm_device, drm);
 }
 
-static const struct drm_display_mode fpga_drm_mode = {
-	.clock = 74250,
-	.hdisplay = FPGA_DRM_WIDTH,
-	.hsync_start = 1390,
-	.hsync_end = 1430,
-	.htotal = 1650,
-	.vdisplay = FPGA_DRM_HEIGHT,
-	.vsync_start = 725,
-	.vsync_end = 730,
-	.vtotal = 750,
-	.flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
-	.width_mm = 0,
-	.height_mm = 0,
-	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+struct fpga_video_mode {
+	struct drm_display_mode drm;
+	u32 line_bytes;
+	u32 frame_bytes;
+	u32 frame_spacing;
+	u32 clk_cfg0;
+	u32 clk_cfg2;
+	const char *name;
 };
+
+#define FPGA_CLK_CFG0(divclk, mult, frac_milli) \
+	((divclk) | ((mult) << 8) | ((frac_milli) << 16))
+#define FPGA_CLK_CFG2(div, frac_milli) \
+	((div) | ((frac_milli) << 8))
+#define FPGA_MODE(_name, _clock, _hd, _hss, _hse, _ht, _vd, _vss, _vse, _vt, \
+		  _flags, _type, _cfg0, _cfg2) \
+	{ \
+		.drm = { \
+			.clock = (_clock), \
+			.hdisplay = (_hd), \
+			.hsync_start = (_hss), \
+			.hsync_end = (_hse), \
+			.htotal = (_ht), \
+			.vdisplay = (_vd), \
+			.vsync_start = (_vss), \
+			.vsync_end = (_vse), \
+			.vtotal = (_vt), \
+			.flags = (_flags), \
+			.width_mm = 0, \
+			.height_mm = 0, \
+			.type = DRM_MODE_TYPE_DRIVER | (_type), \
+		}, \
+		.line_bytes = (_hd) * FPGA_DRM_BPP, \
+		.frame_bytes = (_hd) * (_vd) * FPGA_DRM_BPP, \
+		.frame_spacing = FPGA_HW_FRAME_SPACING, \
+		.clk_cfg0 = (_cfg0), \
+		.clk_cfg2 = (_cfg2), \
+		.name = (_name), \
+	}
+
+static const struct fpga_video_mode fpga_video_modes[] = {
+	FPGA_MODE("640x480@60", 25175,
+		  640, 656, 752, 800, 480, 490, 492, 525,
+		  DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC, 0,
+		  FPGA_CLK_CFG0(11, 36, 0), FPGA_CLK_CFG2(26, 0)),
+	FPGA_MODE("800x600@60", 40000,
+		  800, 840, 968, 1056, 600, 601, 605, 628,
+		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0,
+		  FPGA_CLK_CFG0(1, 3, 0), FPGA_CLK_CFG2(15, 0)),
+	FPGA_MODE("1024x768@60", 65000,
+		  1024, 1048, 1184, 1344, 768, 771, 777, 806,
+		  DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC, 0,
+		  FPGA_CLK_CFG0(4, 13, 0), FPGA_CLK_CFG2(10, 0)),
+	FPGA_MODE("1280x720@60", 74250,
+		  1280, 1390, 1430, 1650, 720, 725, 730, 750,
+		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
+		  DRM_MODE_TYPE_PREFERRED,
+		  FPGA_CLK_CFG0(10, 37, 125), FPGA_CLK_CFG2(10, 0)),
+	FPGA_MODE("1280x1024@60", 108000,
+		  1280, 1328, 1440, 1688, 1024, 1025, 1028, 1066,
+		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0,
+		  FPGA_CLK_CFG0(5, 27, 0), FPGA_CLK_CFG2(10, 0)),
+	FPGA_MODE("1920x1080@60", 148500,
+		  1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125,
+		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0,
+		  FPGA_CLK_CFG0(10, 37, 125), FPGA_CLK_CFG2(5, 0)),
+};
+
+static const struct fpga_video_mode *fpga_drm_preferred_mode(void)
+{
+	return &fpga_video_modes[3];
+}
+
+static bool fpga_drm_modes_equal(const struct drm_display_mode *a,
+				 const struct drm_display_mode *b)
+{
+	return a->clock == b->clock &&
+	       a->hdisplay == b->hdisplay &&
+	       a->hsync_start == b->hsync_start &&
+	       a->hsync_end == b->hsync_end &&
+	       a->htotal == b->htotal &&
+	       a->vdisplay == b->vdisplay &&
+	       a->vsync_start == b->vsync_start &&
+	       a->vsync_end == b->vsync_end &&
+	       a->vtotal == b->vtotal &&
+	       (a->flags & DRM_MODE_FLAG_PHSYNC) ==
+	       (b->flags & DRM_MODE_FLAG_PHSYNC) &&
+	       (a->flags & DRM_MODE_FLAG_NHSYNC) ==
+	       (b->flags & DRM_MODE_FLAG_NHSYNC) &&
+	       (a->flags & DRM_MODE_FLAG_PVSYNC) ==
+	       (b->flags & DRM_MODE_FLAG_PVSYNC) &&
+	       (a->flags & DRM_MODE_FLAG_NVSYNC) ==
+	       (b->flags & DRM_MODE_FLAG_NVSYNC);
+}
+
+static const struct fpga_video_mode *
+fpga_drm_find_video_mode(const struct drm_display_mode *mode)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(fpga_video_modes); i++) {
+		if (fpga_drm_modes_equal(mode, &fpga_video_modes[i].drm))
+			return &fpga_video_modes[i];
+	}
+
+	return NULL;
+}
 
 static const u64 fpga_hw_frame_addr[FPGA_HW_FRAME_COUNT] = {
 	FPGA_HW_FRAME_BASE + 0 * FPGA_HW_FRAME_SPACING,
@@ -438,6 +558,7 @@ static int fpga_drm_reset_vdma_channel(struct fpga_drm_device *fpga, u64 chan)
 }
 
 static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
+					 const struct fpga_video_mode *mode,
 					 const char *name, u64 chan,
 					 u64 addr_base, u32 cr, u32 frame_delay)
 {
@@ -468,13 +589,13 @@ static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
 
 	ret = fpga_drm_axi_write(fpga, FPGA_HW_VDMA_BASE + addr_base +
 				 AXI_VDMA_HSIZE_OFFSET,
-				 FPGA_DRM_LINE_BYTES);
+				 mode->line_bytes);
 	if (ret)
 		return ret;
 
 	ret = fpga_drm_axi_write(fpga, FPGA_HW_VDMA_BASE + addr_base +
 				 AXI_VDMA_STRD_FRMDLY_OFFSET,
-				 (frame_delay << 24) | FPGA_DRM_LINE_BYTES);
+				 (frame_delay << 24) | mode->line_bytes);
 	if (ret)
 		return ret;
 
@@ -493,7 +614,7 @@ static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
 		return ret;
 
 	ret = fpga_drm_axi_write(fpga, FPGA_HW_VDMA_BASE + addr_base +
-				 AXI_VDMA_VSIZE_OFFSET, FPGA_DRM_HEIGHT);
+				 AXI_VDMA_VSIZE_OFFSET, mode->drm.vdisplay);
 	if (ret)
 		return ret;
 
@@ -503,19 +624,21 @@ static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
 		return ret;
 
 	drm_info(&fpga->drm,
-		 "%s configured at 0x%08llx CR=0x%08x SR=0x%08x frames=%u first=0x%08llx\n",
+		 "%s configured at 0x%08llx %ux%u line=%u CR=0x%08x SR=0x%08x frames=%u first=0x%08llx\n",
 		 name, FPGA_HW_VDMA_BASE + chan,
+		 mode->drm.hdisplay, mode->drm.vdisplay, mode->line_bytes,
 		 (u32)(cr | AXI_VDMA_CR_RUNSTOP),
 		 status, FPGA_HW_FRAME_COUNT, fpga_hw_frame_addr[0]);
 	return 0;
 }
 
-static int fpga_drm_config_vdma(struct fpga_drm_device *fpga)
+static int fpga_drm_config_vdma(struct fpga_drm_device *fpga,
+				const struct fpga_video_mode *mode)
 {
 	u32 parkptr;
 	int ret;
 
-	ret = fpga_drm_program_vdma_channel(fpga, "VDMA S2MM",
+	ret = fpga_drm_program_vdma_channel(fpga, mode, "VDMA S2MM",
 					    AXI_VDMA_RX_OFFSET,
 					    AXI_VDMA_S2MM_ADDR_OFFSET,
 					    AXI_VDMA_CR_TAIL_EN |
@@ -527,7 +650,7 @@ static int fpga_drm_config_vdma(struct fpga_drm_device *fpga)
 	if (ret)
 		return ret;
 
-	ret = fpga_drm_program_vdma_channel(fpga, "VDMA MM2S",
+	ret = fpga_drm_program_vdma_channel(fpga, mode, "VDMA MM2S",
 					    AXI_VDMA_TX_OFFSET,
 					    AXI_VDMA_MM2S_ADDR_OFFSET,
 					    AXI_VDMA_CR_TAIL_EN |
@@ -551,18 +674,26 @@ static u32 fpga_drm_vtc_pack(u32 start, u32 end)
 	return (start & 0x3fff) | ((end & 0x3fff) << 16);
 }
 
-static int fpga_drm_config_vtc(struct fpga_drm_device *fpga)
+static int fpga_drm_config_vtc(struct fpga_drm_device *fpga,
+			       const struct fpga_video_mode *mode)
 {
-	const u32 htotal = 1650;
-	const u32 vtotal = 750;
-	const u32 hactive = FPGA_DRM_WIDTH;
-	const u32 vactive = FPGA_DRM_HEIGHT;
-	const u32 hsync_start = 1390;
-	const u32 hsync_end = 1430;
-	const u32 vsync_start = 724;
-	const u32 vsync_end = 729;
+	const struct drm_display_mode *m = &mode->drm;
+	const u32 htotal = m->htotal;
+	const u32 vtotal = m->vtotal;
+	const u32 hactive = m->hdisplay;
+	const u32 vactive = m->vdisplay;
+	const u32 hsync_start = m->hsync_start;
+	const u32 hsync_end = m->hsync_end;
+	const u32 vsync_start = m->vsync_start - 1;
+	const u32 vsync_end = m->vsync_end - 1;
+	u32 polarity = VTC_POL_BASE;
 	u32 ctl, gtstat;
 	int ret;
+
+	if (m->flags & DRM_MODE_FLAG_PHSYNC)
+		polarity |= VTC_POL_HSYNC;
+	if (m->flags & DRM_MODE_FLAG_PVSYNC)
+		polarity |= VTC_POL_VSYNC;
 
 	ret = fpga_drm_axi_write(fpga, FPGA_HW_VTC_BASE + VTC_GHSIZE, htotal);
 	if (ret)
@@ -610,8 +741,7 @@ static int fpga_drm_config_vtc(struct fpga_drm_device *fpga)
 	ret = fpga_drm_axi_write(fpga, FPGA_HW_VTC_BASE + VTC_GFENC, 0);
 	if (ret)
 		return ret;
-	ret = fpga_drm_axi_write(fpga, FPGA_HW_VTC_BASE + VTC_GPOL,
-				 VTC_POL_ALL);
+	ret = fpga_drm_axi_write(fpga, FPGA_HW_VTC_BASE + VTC_GPOL, polarity);
 	if (ret)
 		return ret;
 
@@ -629,8 +759,10 @@ static int fpga_drm_config_vtc(struct fpga_drm_device *fpga)
 		return ret;
 
 	drm_info(&fpga->drm,
-		 "VTC configured at 0x%08llx 1280x720@60 CTL=0x%08x GTSTAT=0x%08x\n",
-		 FPGA_HW_VTC_BASE, ctl, gtstat);
+		 "VTC configured at 0x%08llx %s h=%u/%u-%u/%u v=%u/%u-%u/%u pol=0x%02x CTL=0x%08x GTSTAT=0x%08x\n",
+		 FPGA_HW_VTC_BASE, mode->name, hactive, hsync_start,
+		 hsync_end, htotal, vactive, vsync_start + 1,
+		 vsync_end + 1, vtotal, polarity, ctl, gtstat);
 	return 0;
 }
 
@@ -751,9 +883,91 @@ static int fpga_drm_config_video_lock_gpio(struct fpga_drm_device *fpga)
 	return 0;
 }
 
-static int fpga_drm_configure_pipeline(struct fpga_drm_device *fpga)
+static int fpga_drm_wait_clk_wiz_locked(struct fpga_drm_device *fpga)
 {
-	u32 vdma_s2mm_sr, vdma_mm2s_sr, vtc_isr, vtc_err, clk_wiz_status;
+	u32 status, cfg23;
+	int ret;
+	int i;
+
+	for (i = 0; i < 1000; i++) {
+		ret = fpga_drm_axi_read(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+					CLK_WIZ_SR, &status);
+		if (ret)
+			return ret;
+		ret = fpga_drm_axi_read(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+					CLK_WIZ_CFG23, &cfg23);
+		if (ret)
+			return ret;
+
+		if ((status & CLK_WIZ_SR_LOCKED) && !(cfg23 & CLK_WIZ_CFG23_LOAD))
+			return 0;
+
+		usleep_range(1000, 2000);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static int fpga_drm_config_clk_wiz(struct fpga_drm_device *fpga,
+				   const struct fpga_video_mode *mode)
+{
+	u32 status;
+	int ret;
+
+	ret = fpga_drm_axi_read(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE + CLK_WIZ_SR,
+				&status);
+	if (ret)
+		return ret;
+	if (!(status & CLK_WIZ_SR_LOCKED))
+		drm_warn(&fpga->drm,
+			 "video clock wizard was unlocked before reconfiguring %s: SR=0x%08x\n",
+			 mode->name, status);
+
+	ret = fpga_drm_axi_write(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+				 CLK_WIZ_CFG0, mode->clk_cfg0);
+	if (ret)
+		return ret;
+	ret = fpga_drm_axi_write(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+				 CLK_WIZ_CFG1, 0);
+	if (ret)
+		return ret;
+	ret = fpga_drm_axi_write(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+				 CLK_WIZ_CFG2, mode->clk_cfg2);
+	if (ret)
+		return ret;
+	ret = fpga_drm_axi_write(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+				 CLK_WIZ_CFG3, 0);
+	if (ret)
+		return ret;
+	ret = fpga_drm_axi_write(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+				 CLK_WIZ_CFG4, CLK_WIZ_DUTY_50);
+	if (ret)
+		return ret;
+
+	ret = fpga_drm_axi_write(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE +
+				 CLK_WIZ_CFG23,
+				 CLK_WIZ_CFG23_LOAD | CLK_WIZ_CFG23_SADDR);
+	if (ret)
+		return ret;
+
+	ret = fpga_drm_wait_clk_wiz_locked(fpga);
+	if (ret)
+		return ret;
+
+	ret = fpga_drm_axi_read(fpga, FPGA_HW_VIDEO_CLK_WIZ_BASE + CLK_WIZ_SR,
+				&status);
+	if (ret)
+		return ret;
+
+	drm_info(&fpga->drm,
+		 "video clock configured for %s pixel_clock=%u kHz CFG0=0x%08x CFG2=0x%08x SR=0x%08x\n",
+		 mode->name, mode->drm.clock, mode->clk_cfg0, mode->clk_cfg2,
+		 status);
+	return 0;
+}
+
+static int fpga_drm_configure_static_pipeline(struct fpga_drm_device *fpga)
+{
 	int ret;
 
 	if (!configure_pipeline) {
@@ -794,7 +1008,7 @@ static int fpga_drm_configure_pipeline(struct fpga_drm_device *fpga)
 		 FPGA_HW_FRAME_BASE,
 		 FPGA_HW_FRAME_BASE +
 		 (FPGA_HW_FRAME_COUNT - 1) * FPGA_HW_FRAME_SPACING +
-		 FPGA_DRM_FRAME_BYTES - 1,
+		 FPGA_DRM_MAX_FRAME_BYTES - 1,
 		 FPGA_HW_FRAME_COUNT, FPGA_HW_FRAME_SPACING);
 
 	ret = fpga_drm_config_video_lock_gpio(fpga);
@@ -806,13 +1020,33 @@ static int fpga_drm_configure_pipeline(struct fpga_drm_device *fpga)
 	ret = fpga_drm_config_color_convert(fpga);
 	if (ret)
 		return ret;
-	ret = fpga_drm_config_vdma(fpga);
-	if (ret)
-		return ret;
 	ret = fpga_drm_config_iic_hdmi(fpga);
 	if (ret)
 		return ret;
-	ret = fpga_drm_config_vtc(fpga);
+
+	return 0;
+}
+
+static int fpga_drm_program_mode(struct fpga_drm_device *fpga,
+				 const struct fpga_video_mode *mode)
+{
+	u32 vdma_s2mm_sr, vdma_mm2s_sr, vtc_isr, vtc_err, clk_wiz_status;
+	int ret;
+
+	if (!configure_pipeline) {
+		drm_info(&fpga->drm,
+			 "FPGA video mode programming disabled, accepting %s\n",
+			 mode->name);
+		return 0;
+	}
+
+	ret = fpga_drm_config_clk_wiz(fpga, mode);
+	if (ret)
+		return ret;
+	ret = fpga_drm_config_vdma(fpga, mode);
+	if (ret)
+		return ret;
+	ret = fpga_drm_config_vtc(fpga, mode);
 	if (ret)
 		return ret;
 
@@ -836,8 +1070,9 @@ static int fpga_drm_configure_pipeline(struct fpga_drm_device *fpga)
 		return ret;
 
 	drm_info(&fpga->drm,
-		 "pipeline readback: VDMA S2MM_SR=0x%08x MM2S_SR=0x%08x VTC_ISR=0x%08x VTC_ERR=0x%08x CLK_WIZ_STATUS=0x%08x\n",
-		 vdma_s2mm_sr, vdma_mm2s_sr, vtc_isr, vtc_err, clk_wiz_status);
+		 "mode %s readback: VDMA S2MM_SR=0x%08x MM2S_SR=0x%08x VTC_ISR=0x%08x VTC_ERR=0x%08x CLK_WIZ_STATUS=0x%08x\n",
+		 mode->name, vdma_s2mm_sr, vdma_mm2s_sr, vtc_isr, vtc_err,
+		 clk_wiz_status);
 	return 0;
 }
 
@@ -904,11 +1139,15 @@ static bool fpga_drm_dma_idle(struct fpga_drm_device *fpga)
 static void fpga_drm_dma_finish(struct fpga_drm_device *fpga,
 				int completion_err, ssize_t completion_len)
 {
+	const struct fpga_video_mode *mode = fpga->active_mode;
 	unsigned long flags;
 	bool upload_pending;
 	int ret = completion_err;
 
-	if (!ret && completion_len != FPGA_DRM_FRAME_BYTES)
+	if (!mode)
+		mode = fpga_drm_preferred_mode();
+
+	if (!ret && completion_len != mode->frame_bytes)
 		ret = -EIO;
 
 	spin_lock_irqsave(&fpga->dma_state_lock, flags);
@@ -930,8 +1169,8 @@ static void fpga_drm_dma_finish(struct fpga_drm_device *fpga,
 		fpga->frames_uploaded++;
 		if (debug_logging)
 			drm_info(&fpga->drm,
-				 "async frame upload complete count=%llu\n",
-				 fpga->frames_uploaded);
+				 "async frame upload complete mode=%s count=%llu\n",
+				 mode->name, fpga->frames_uploaded);
 	}
 
 	if (upload_pending)
@@ -963,7 +1202,7 @@ static void fpga_drm_dma_complete_work(struct work_struct *work)
 	if (fpga->frame_cb.req) {
 		ret = xdma_xfer_completion(&fpga->frame_cb, fpga->xdma,
 					   h2c_channel, true, stream_ep_addr,
-					   &fpga->frame_sgt, false,
+					   &fpga->active_frame_sgt, false,
 					   FPGA_DRM_TIMEOUT_MS);
 		fpga->frame_cb.req = NULL;
 	}
@@ -977,42 +1216,66 @@ static int fpga_drm_copy_frame(struct fpga_drm_device *fpga,
 			       struct drm_framebuffer *fb,
 			       const struct iosys_map *map)
 {
+	const struct fpga_video_mode *mode = fpga->active_mode;
 	u8 *src = map->vaddr;
 	unsigned int y;
 
 	if (!src)
 		return -EINVAL;
 
+	if (!mode)
+		mode = fpga_drm_preferred_mode();
+
 	if (fb->format->format != DRM_FORMAT_XRGB8888 ||
-	    fb->width != FPGA_DRM_WIDTH || fb->height != FPGA_DRM_HEIGHT)
+	    fb->width != mode->drm.hdisplay || fb->height != mode->drm.vdisplay)
 		return -EINVAL;
 
-	if (fb->pitches[0] < FPGA_DRM_LINE_BYTES)
+	if (fb->pitches[0] < mode->line_bytes)
 		return -EINVAL;
 
-	for (y = 0; y < FPGA_DRM_HEIGHT; y++)
+	for (y = 0; y < mode->drm.vdisplay; y++)
 		memcpy(fpga->line_bufs[y], src + y * fb->pitches[0],
-		       FPGA_DRM_LINE_BYTES);
+		       mode->line_bytes);
 
 	return 0;
+}
+
+static void fpga_drm_prepare_active_sgt(struct fpga_drm_device *fpga,
+					const struct fpga_video_mode *mode)
+{
+	struct scatterlist *sg;
+	unsigned int y;
+
+	for_each_sg(fpga->frame_sgt.sgl, sg, mode->drm.vdisplay, y)
+		sg_set_buf(sg, fpga->line_bufs[y], mode->line_bytes);
+
+	fpga->active_frame_sgt.sgl = fpga->frame_sgt.sgl;
+	fpga->active_frame_sgt.orig_nents = mode->drm.vdisplay;
+	fpga->active_frame_sgt.nents = 0;
 }
 
 static int fpga_drm_submit_frame_nowait(struct fpga_drm_device *fpga,
 					struct drm_framebuffer *fb,
 					const struct iosys_map *map)
 {
+	const struct fpga_video_mode *mode = fpga->active_mode;
 	unsigned long flags;
 	ssize_t ret;
 
+	if (!mode)
+		mode = fpga_drm_preferred_mode();
+
 	if (debug_logging)
 		drm_info(&fpga->drm,
-			 "upload frame fb=%ux%u pitch=%u format=%p4cc\n",
-			 fb->width, fb->height, fb->pitches[0],
+			 "upload frame mode=%s fb=%ux%u pitch=%u format=%p4cc\n",
+			 mode->name, fb->width, fb->height, fb->pitches[0],
 			 &fb->format->format);
 
 	ret = fpga_drm_copy_frame(fpga, fb, map);
 	if (ret)
 		return ret;
+
+	fpga_drm_prepare_active_sgt(fpga, mode);
 
 	memset(&fpga->frame_cb, 0, sizeof(fpga->frame_cb));
 	fpga->frame_cb.private = fpga;
@@ -1029,9 +1292,9 @@ static int fpga_drm_submit_frame_nowait(struct fpga_drm_device *fpga,
 
 	ret = xdma_xfer_submit_lines_nowait(&fpga->frame_cb, fpga->xdma,
 					    h2c_channel, true, stream_ep_addr,
-					    &fpga->frame_sgt, false,
-					    FPGA_DRM_LINE_BYTES,
-					    FPGA_DRM_HEIGHT);
+					    &fpga->active_frame_sgt, false,
+					    mode->line_bytes,
+					    mode->drm.vdisplay);
 	if (ret != -EIOCBQUEUED) {
 		spin_lock_irqsave(&fpga->dma_state_lock, flags);
 		fpga->dma_inflight = false;
@@ -1161,9 +1424,10 @@ static enum drm_mode_status
 fpga_drm_mode_valid(struct drm_simple_display_pipe *pipe,
 		    const struct drm_display_mode *mode)
 {
-	if (mode->hdisplay == FPGA_DRM_WIDTH &&
-	    mode->vdisplay == FPGA_DRM_HEIGHT &&
-	    drm_mode_vrefresh(mode) == 60)
+	if (mode->clock > FPGA_DRM_MAX_PIXEL_CLOCK_KHZ)
+		return MODE_CLOCK_HIGH;
+
+	if (fpga_drm_find_video_mode(mode))
 		return MODE_OK;
 
 	return MODE_BAD;
@@ -1176,19 +1440,39 @@ static void fpga_drm_pipe_enable(struct drm_simple_display_pipe *pipe,
 	struct fpga_drm_device *fpga = to_fpga(pipe->crtc.dev);
 	struct drm_shadow_plane_state *shadow_state =
 		to_drm_shadow_plane_state(plane_state);
-	struct drm_rect rect = {
-		.x1 = 0,
-		.y1 = 0,
-		.x2 = FPGA_DRM_WIDTH,
-		.y2 = FPGA_DRM_HEIGHT,
-	};
+	const struct fpga_video_mode *mode =
+		fpga_drm_find_video_mode(&crtc_state->mode);
+	struct drm_rect rect;
+	int ret;
+
+	if (!mode) {
+		drm_err(&fpga->drm, "pipe enable rejected unknown mode %s\n",
+			crtc_state->mode.name);
+		return;
+	}
+
+	fpga_drm_stop_uploads(fpga);
+
+	ret = fpga_drm_program_mode(fpga, mode);
+	if (ret) {
+		drm_err(&fpga->drm, "failed to program mode %s: %d\n",
+			mode->name, ret);
+		return;
+	}
+
+	rect.x1 = 0;
+	rect.y1 = 0;
+	rect.x2 = mode->drm.hdisplay;
+	rect.y2 = mode->drm.vdisplay;
 
 	mutex_lock(&fpga->upload_lock);
+	fpga->active_mode = mode;
 	fpga->pipe_enabled = true;
 	mutex_unlock(&fpga->upload_lock);
 
 	if (debug_logging)
-		drm_info(&fpga->drm, "pipe enable fb=%p\n", plane_state->fb);
+		drm_info(&fpga->drm, "pipe enable mode=%s fb=%p\n",
+			 mode->name, plane_state->fb);
 
 	fpga_drm_mark_dirty(fpga, plane_state->fb, &shadow_state->data[0], &rect);
 }
@@ -1214,18 +1498,23 @@ static void fpga_drm_pipe_update(struct drm_simple_display_pipe *pipe,
 	struct drm_shadow_plane_state *shadow_state =
 		to_drm_shadow_plane_state(state);
 	struct fpga_drm_device *fpga = to_fpga(pipe->crtc.dev);
+	const struct fpga_video_mode *mode = fpga->active_mode;
 	struct drm_rect rect;
 
 	if (!state->fb)
 		return;
 
+	if (!mode)
+		mode = fpga_drm_preferred_mode();
+
 	if (upload_full_frame) {
 		rect.x1 = 0;
 		rect.y1 = 0;
-		rect.x2 = FPGA_DRM_WIDTH;
-		rect.y2 = FPGA_DRM_HEIGHT;
+		rect.x2 = mode->drm.hdisplay;
+		rect.y2 = mode->drm.vdisplay;
 		if (debug_logging)
-			drm_info(&fpga->drm, "pipe update full-frame\n");
+			drm_info(&fpga->drm, "pipe update mode=%s full-frame\n",
+				 mode->name);
 		fpga_drm_mark_dirty(fpga, state->fb, &shadow_state->data[0], &rect);
 		return;
 	}
@@ -1271,6 +1560,8 @@ fpga_drm_connector_detect(struct drm_connector *connector, bool force)
 static int fpga_drm_connector_get_modes(struct drm_connector *connector)
 {
 	struct fpga_drm_device *fpga = to_fpga(connector->dev);
+	unsigned int count = 0;
+	unsigned int i;
 
 	if (!connector_connected) {
 		if (debug_logging)
@@ -1279,9 +1570,23 @@ static int fpga_drm_connector_get_modes(struct drm_connector *connector)
 	}
 
 	if (debug_logging)
-		drm_info(&fpga->drm, "get_modes: adding fixed 1280x720@60\n");
+		drm_info(&fpga->drm, "get_modes: adding %zu whitelist modes\n",
+			 ARRAY_SIZE(fpga_video_modes));
 
-	return drm_connector_helper_get_modes_fixed(connector, &fpga_drm_mode);
+	for (i = 0; i < ARRAY_SIZE(fpga_video_modes); i++) {
+		struct drm_display_mode *mode;
+
+		mode = drm_mode_duplicate(connector->dev,
+					  &fpga_video_modes[i].drm);
+		if (!mode)
+			continue;
+
+		drm_mode_set_name(mode);
+		drm_mode_probed_add(connector, mode);
+		count++;
+	}
+
+	return count;
 }
 
 static const struct drm_connector_helper_funcs fpga_drm_connector_helper_funcs = {
@@ -1325,10 +1630,10 @@ static int fpga_drm_modeset_init(struct fpga_drm_device *fpga)
 	if (ret)
 		return ret;
 
-	drm->mode_config.min_width = FPGA_DRM_WIDTH;
-	drm->mode_config.max_width = FPGA_DRM_WIDTH;
-	drm->mode_config.min_height = FPGA_DRM_HEIGHT;
-	drm->mode_config.max_height = FPGA_DRM_HEIGHT;
+	drm->mode_config.min_width = 640;
+	drm->mode_config.max_width = FPGA_DRM_MAX_WIDTH;
+	drm->mode_config.min_height = 480;
+	drm->mode_config.max_height = FPGA_DRM_MAX_HEIGHT;
 	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.quirk_addfb_prefer_host_byte_order = true;
 	drm->mode_config.funcs = &fpga_drm_mode_config_funcs;
@@ -1379,7 +1684,7 @@ static int fpga_drm_alloc_frame_buffers(struct fpga_drm_device *fpga)
 	unsigned int y;
 	int ret;
 
-	ret = sg_alloc_table(&fpga->frame_sgt, FPGA_DRM_HEIGHT, GFP_KERNEL);
+	ret = sg_alloc_table(&fpga->frame_sgt, FPGA_DRM_MAX_HEIGHT, GFP_KERNEL);
 	if (ret)
 		return ret;
 	fpga->frame_sgt_ready = true;
@@ -1388,15 +1693,15 @@ static int fpga_drm_alloc_frame_buffers(struct fpga_drm_device *fpga)
 	if (ret)
 		return ret;
 
-	for (y = 0; y < FPGA_DRM_HEIGHT; y++) {
-		fpga->line_bufs[y] = drmm_kmalloc(drm, FPGA_DRM_LINE_BYTES,
+	for (y = 0; y < FPGA_DRM_MAX_HEIGHT; y++) {
+		fpga->line_bufs[y] = drmm_kmalloc(drm, FPGA_DRM_MAX_LINE_BYTES,
 						  GFP_KERNEL);
 		if (!fpga->line_bufs[y])
 			return -ENOMEM;
 	}
 
-	for_each_sg(fpga->frame_sgt.sgl, sg, FPGA_DRM_HEIGHT, y)
-		sg_set_buf(sg, fpga->line_bufs[y], FPGA_DRM_LINE_BYTES);
+	for_each_sg(fpga->frame_sgt.sgl, sg, FPGA_DRM_MAX_HEIGHT, y)
+		sg_set_buf(sg, fpga->line_bufs[y], FPGA_DRM_MAX_LINE_BYTES);
 
 	return 0;
 }
@@ -1467,6 +1772,7 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	drm = &fpga->drm;
 	fpga->pdev = pdev;
+	fpga->active_mode = fpga_drm_preferred_mode();
 
 	mutex_init(&fpga->upload_lock);
 	mutex_init(&fpga->dma_lock);
@@ -1490,7 +1796,7 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		 h2c_channel, fpga->mmio_bar_name, fpga->mmio_bar_idx,
 		 (unsigned long long)fpga->mmio_bar_len);
 
-	ret = fpga_drm_configure_pipeline(fpga);
+	ret = fpga_drm_configure_static_pipeline(fpga);
 	if (ret)
 		return ret;
 
@@ -1508,9 +1814,11 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		drm_fbdev_generic_setup(drm, 32);
 
 	drm_info(drm,
-		 "registered fixed %ux%u XRGB8888 stream display, connected=%u non_desktop=%u fbdev=%u upload=%u debug=%u\n",
-		 FPGA_DRM_WIDTH, FPGA_DRM_HEIGHT, connector_connected,
-		 connector_non_desktop, enable_fbdev, upload_enabled, debug_logging);
+		 "registered %zu-mode XRGB8888 stream display max=%ux%u pixel_clock<=%u kHz connected=%u non_desktop=%u fbdev=%u upload=%u debug=%u\n",
+		 ARRAY_SIZE(fpga_video_modes), FPGA_DRM_MAX_WIDTH,
+		 FPGA_DRM_MAX_HEIGHT, FPGA_DRM_MAX_PIXEL_CLOCK_KHZ,
+		 connector_connected, connector_non_desktop, enable_fbdev,
+		 upload_enabled, debug_logging);
 
 	return 0;
 }

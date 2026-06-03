@@ -5,7 +5,8 @@
 | Entry point | Role |
 |---|---|
 | `fpga_drm_probe()` | PCI probe and DRM/XDMA initialization. |
-| `fpga_drm_configure_pipeline()` | Host-side FPGA video-IP setup through the XDMA bypass BAR. |
+| `fpga_drm_configure_static_pipeline()` | Host-side static FPGA video-IP setup through the XDMA bypass BAR. |
+| `fpga_drm_program_mode()` | Programs the video clock wizard, VDMA, and VTC for a KMS mode. |
 | `fpga_drm_remove()` | PCI remove and upload shutdown. |
 | `fpga_drm_shutdown()` | System shutdown KMS cleanup. |
 | `fpga_drm_pipe_enable()` | DRM atomic enable callback. |
@@ -22,17 +23,16 @@ flowchart TD
     B --> C[devm_drm_dev_alloc]
     B --> D[init upload and DMA locks/work]
     B --> E[fpga_drm_alloc_frame_buffers]
-    E --> F[sg_alloc_table frame_sgt with 720 entries]
-    E --> G[drmm_kmalloc line_bufs 0..719]
+    E --> F[sg_alloc_table frame_sgt with 1080 entries]
+    E --> G[drmm_kmalloc max-width line_bufs 0..1079]
     B --> H[fpga_drm_open_xdma]
     H --> I[xdma_device_open]
     I --> J[enable PCI and map BARs]
     H --> U[select bypass BAR for AXI-Lite MMIO]
     I --> K[probe engines and setup IRQs]
-    B --> Q[fpga_drm_configure_pipeline]
+    B --> Q[fpga_drm_configure_static_pipeline]
     Q --> R[program pixel unpack and color convert]
-    Q --> S[program VDMA at 0x00040000]
-    Q --> T[program HDMI I2C and VTC]
+    Q --> T[program HDMI I2C and video-lock GPIO]
     B --> L[fpga_drm_modeset_init]
     L --> M[drm_connector_init]
     L --> N[drm_simple_display_pipe_init]
@@ -50,7 +50,8 @@ flowchart TD
     Core --> Commit[atomic commit]
     Commit --> Enable[fpga_drm_pipe_enable]
     Commit --> Update[fpga_drm_pipe_update]
-    Enable --> Mark[fpga_drm_mark_dirty]
+    Enable --> Mode[fpga_drm_program_mode]
+    Mode --> Mark[fpga_drm_mark_dirty]
     Update --> Mark
     Mark --> Schedule[schedule upload_work]
 ```
@@ -63,7 +64,7 @@ flowchart TD
     Busy -- yes --> Pending[set upload_pending]
     Busy -- no --> Submit[fpga_drm_submit_frame_nowait]
     Submit --> Copy[fpga_drm_copy_frame]
-    Copy --> Lines[memcpy into 720 line_bufs]
+    Copy --> Lines[memcpy into active lines]
     Lines --> CB[initialize frame_cb]
     CB --> Xfer[xdma_xfer_submit_lines_nowait]
     Xfer --> Count[xdma_count_line_descriptors]

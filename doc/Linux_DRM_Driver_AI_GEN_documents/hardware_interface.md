@@ -4,18 +4,19 @@
 
 The Linux driver owns the PCIe/XDMA transport, DRM display surface, and FPGA
 video-IP setup. During probe, `fpga_drm.ko` opens XDMA, obtains the mapped
-XDMA bypass BAR, and programs the AXI-Lite slaves listed in
-`fpga_hardware/PCIe_wrapper/PCIe.hwh`.
+XDMA bypass BAR, validates the AXI-Lite slaves listed in
+`fpga_hardware/PCIe_wrapper/PCIe.hwh`, and configures static video IP state.
+The selected video timing is programmed on KMS enable/modeset.
 
 The expected hardware contract is:
 
 - the FPGA enumerates as a PCI display-class device for normal desktop
   integration;
 - the PCI function contains Xilinx XDMA with an H2C AXI-stream engine;
-- the stream sink accepts one 1280-pixel line per packet;
-- each line packet is 5120 bytes of XRGB8888 storage;
+- the stream sink accepts one active XRGB8888 line per packet;
+- each line packet is `active_width * 4` bytes;
 - EOP/TLAST is asserted once per line;
-- the FPGA stages one complete 1280x720 frame as 720 line buffers.
+- the FPGA stages one complete active-mode frame into the VDMA DDR ring.
 
 ## Linux-Visible Resources
 
@@ -32,9 +33,9 @@ The expected hardware contract is:
 
 | Item | Value |
 |---|---|
-| Resolution | 1280x720 |
-| Line bytes | 1280 * 4 = 5120 |
-| Frame bytes | 5120 * 720 = 3,686,400 |
+| Resolution | Whitelist up to 1920x1080 |
+| Line bytes | `active_width * 4`, maximum `1920 * 4 = 7680` |
+| Frame bytes | `line_bytes * active_height`, maximum `8,294,400` |
 | Pixel storage | 32 bits per pixel |
 | Pixel meaning | XRGB8888; X byte ignored by FPGA, RGB in low 24 bits |
 | Packet boundary | One AXI-stream packet per line |
@@ -46,14 +47,17 @@ boundary and STOP/COMPLETED on the final descriptor.
 
 ## Frame Buffering Contract
 
-The driver allocates 720 host line buffers and keeps a persistent SG table with
-one entry per line. On each upload, it copies the current DRM framebuffer into
-those line buffers and submits the complete frame to XDMA.
+The driver allocates 1080 host line buffers, each sized for a 1920-pixel
+XRGB8888 line, and keeps a persistent SG table. On each upload, it copies only
+the active mode's width and height into those line buffers, sizes the active SG
+view to the active line byte count, and submits the complete active-mode frame
+to XDMA.
 
-The hardware side accepts 720 line packets into VDMA S2MM. The driver programs
-the VDMA frame ring in DDR, starts S2MM/MM2S, configures pixel unpack and color
-conversion, programs the HDMI I2C LUT, and enables the VTC 1280x720@60
-generator.
+The hardware side accepts active-mode line packets into VDMA S2MM. The driver
+programs the VDMA frame ring in DDR, starts S2MM/MM2S, configures pixel unpack
+and color conversion, programs the HDMI I2C LUT, and enables the VTC generator
+for the selected mode. The DDR frame spacing is based on the largest supported
+frame so mode switches cannot make frame stores overlap.
 
 ## Register Access
 
@@ -71,7 +75,7 @@ only for other designs that expose the AXI-Lite aperture there.
 | Interrupt registers | MSI-X/MSI/legacy channel and user interrupt control. |
 | XDMA bypass BAR AXI-Lite window | Host writes to the FPGA video IP address map. |
 
-The fixed bypass BAR AXI address map is:
+The bypass BAR AXI address map is:
 
 | IP | AXI address |
 |---|---:|
@@ -95,4 +99,4 @@ programmed into VDMA are still DDR addresses, currently starting at
 |---|---|
 | MicroBlaze firmware control | Replaced by host-side AXI-Lite setup for this pipeline. |
 | C2H video capture | Not used by this display driver. |
-| Dynamic modes | Not implemented; v1 remains fixed at 1280x720@60. |
+| Arbitrary modelines | Not supported; the driver accepts only the whitelist at or below `148.5 MHz`. |

@@ -5,3 +5,5 @@ tmp_hw_probe/
 codex.log
 tmp_fpga_drm_probe
 tmp_ila_capture
+vivado_ip_docs
+*.o

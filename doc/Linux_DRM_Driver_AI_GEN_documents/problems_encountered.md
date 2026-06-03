@@ -12,8 +12,9 @@ line transfers. That path was too slow and could stall the display update path.
 **Cause:** Each line used its own synchronous XDMA submission and completion
 wait, so a full frame paid the setup and wake cost 720 times.
 
-**Fix:** The current driver copies the framebuffer into 720 line buffers, keeps
-a 720-entry frame SG table, and submits the whole frame with
+**Fix:** The current driver copies the framebuffer into max-width line buffers,
+keeps a max-height frame SG table, prepares an active-mode SG view, and submits
+the whole frame with
 `xdma_xfer_submit_lines_nowait()`. Completion is handled by callback,
 completion work, and timeout work.
 

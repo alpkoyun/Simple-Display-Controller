@@ -6,7 +6,7 @@ This tree contains two driver surfaces:
 
 | Surface | Built from | Purpose |
 |---|---|---|
-| `fpga_drm.ko` | `Linux_DRM_Driver/fpga_drm/fpga_drm_drv.c` plus the linked XDMA core files | Fixed-mode DRM/KMS display driver for the FPGA HDMI output. |
+| `fpga_drm.ko` | `Linux_DRM_Driver/fpga_drm/fpga_drm_drv.c` plus the linked XDMA core files | Whitelist-mode DRM/KMS display driver for the FPGA HDMI output. |
 | standalone `xdma.ko` | `XDMA_driver/xdma/*.c` | Xilinx reference XDMA character-device driver. It is not loaded at the same time as `fpga_drm.ko`. |
 
 Unless stated otherwise, "the driver" means `fpga_drm.ko`.
@@ -15,15 +15,15 @@ Unless stated otherwise, "the driver" means `fpga_drm.ko`.
 
 `fpga_drm.ko` owns one PCIe XDMA function and exposes it as one DRM display. It
 uses normal DRM helpers for mode setting and framebuffer memory, programs the
-FPGA video pipeline through the XDMA bypass BAR during probe, then uses the
-vendored XDMA core to transfer the committed framebuffer to the FPGA.
+FPGA video pipeline through the XDMA bypass BAR during probe and modeset, then
+uses the vendored XDMA core to transfer the committed framebuffer to the FPGA.
 
 | Contract | Current implementation |
 |---|---|
-| Fixed display mode | `FPGA_DRM_WIDTH`, `FPGA_DRM_HEIGHT`, and `fpga_drm_mode` define 1280x720@60. |
+| Display modes | `fpga_video_modes[]` advertises common 60 Hz timings up to `1920x1080@60` and `148.5 MHz`. |
 | Pixel format | `fpga_drm_formats[]` advertises `DRM_FORMAT_XRGB8888`; `fpga_drm_copy_frame()` validates format and size. |
-| Frame staging | `fpga_drm_alloc_frame_buffers()` allocates 720 line buffers and one 720-entry `frame_sgt`. |
-| Video-IP setup | `fpga_drm_configure_pipeline()` programs pixel unpack, color convert, VDMA, HDMI I2C, VTC, and debug readbacks. |
+| Frame staging | `fpga_drm_alloc_frame_buffers()` allocates 1080 max-width line buffers and one max-height `frame_sgt`; submit uses an active-mode SG view. |
+| Video-IP setup | `fpga_drm_configure_static_pipeline()` programs static IP state; `fpga_drm_program_mode()` programs clock wizard, VDMA, VTC, and debug readbacks. |
 | DMA submission | `fpga_drm_submit_frame_nowait()` calls `xdma_xfer_submit_lines_nowait()`. |
 | Completion | `fpga_drm_xdma_done()` queues `dma_complete_work`; timeout is handled by `dma_timeout_work`. |
 
@@ -33,9 +33,9 @@ vendored XDMA core to transfer the committed framebuffer to the FPGA.
 |---|---|
 | PCIe endpoint | Matched through `fpga_drm_pci_ids`; `libxdma` enables the device, maps BARs, sets the DMA mask, and configures IRQs. |
 | XDMA AXI-Lite bypass BAR | Required at probe for this hardware; `xdma_device_bypass_bar()` exposes it to the DRM side for video-IP registers. |
-| XDMA H2C AXI-stream engine | Used by `xdma_xfer_submit_lines_nowait()` with `write=true`, `line_size=5120`, and `line_count=720`. |
+| XDMA H2C AXI-stream engine | Used by `xdma_xfer_submit_lines_nowait()` with `write=true`, `line_size=active_width * 4`, and `line_count=active_height`. |
 | FPGA video path | VDMA S2MM captures H2C line packets into DDR frame buffers; VDMA MM2S feeds pixel unpack, color convert, and HDMI timing. |
-| Host video IP setup | Linux programs the fixed bypass BAR address map from `PCIe.hwh`, including VDMA at `0x00040000`. |
+| Host video IP setup | Linux programs the bypass BAR address map from `PCIe.hwh`, including VDMA at `0x00040000`. |
 
 ## Main Files
 
@@ -53,8 +53,10 @@ vendored XDMA core to transfer the committed framebuffer to the FPGA.
 | State | Purpose |
 |---|---|
 | `struct fpga_drm_device` | Per-device DRM, PCI, XDMA, connector, pipe, upload, DMA, and diagnostic state. |
-| `frame_sgt` | 720-entry SG table, one entry per line buffer. |
-| `line_bufs[720]` | DRM-managed host buffers containing the frame currently submitted to XDMA. |
+| `frame_sgt` | Max-height SG table, one entry per line buffer. |
+| `active_frame_sgt` | Per-submit SG-table view sized to the active mode height. |
+| `line_bufs[1080]` | DRM-managed max-width host buffers containing the active-mode frame submitted to XDMA. |
+| `active_mode` | Current whitelist mode used for framebuffer validation, VDMA/VTC/clock setup, and DMA completion length checks. |
 | `frame_cb` | `struct xdma_io_cb` used for async XDMA callback and request tracking. |
 | `upload_fb`, `upload_map`, `upload_rect` | Latest framebuffer state captured from DRM shadow-plane callbacks. |
 | `dma_inflight`, `dma_completion_pending`, `upload_pending` | Serialized async frame-upload state. |
@@ -74,15 +76,15 @@ vendored XDMA core to transfer the committed framebuffer to the FPGA.
 ```mermaid
 flowchart TD
     PCI[PCI core matches Xilinx XDMA ID] --> Probe[fpga_drm_probe]
-    Probe --> Buffers[allocate 720 line buffers and frame_sgt]
+    Probe --> Buffers[allocate 1080 max-width line buffers and frame_sgt]
     Probe --> XDMA[xdma_device_open]
     XDMA --> BAR[map BARs, select bypass BAR, discover engines]
     XDMA --> IRQ[setup IRQ or poll completion]
-    Probe --> VP[configure video IPs through bypass BAR]
-    VP --> VDMA[program VDMA at 0x00040000]
+    Probe --> VP[configure static video IPs through bypass BAR]
     Probe --> DRM[DRM mode config and register]
-    DRM --> Conn[virtual connector: 1280x720]
+    DRM --> Conn[virtual connector: whitelist modes]
     DRM --> Pipe[drm_simple_display_pipe]
+    Pipe --> Modeset[program clock wizard, VTC, VDMA]
     Pipe --> Shadow[GEM SHMEM shadow framebuffer]
     Shadow --> Work[upload_work]
     Work --> Copy[fpga_drm_copy_frame]

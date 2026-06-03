@@ -33,8 +33,8 @@ frame is already running, the function sets `upload_pending`, drops its
 temporary framebuffer reference, and returns. `fpga_drm_dma_finish()` schedules
 `upload_work` again when it observes that pending flag.
 
-This keeps the 720 line buffers safe. They are not overwritten while the H2C
-engine can still read them.
+This keeps the max-width line buffers safe. They are not overwritten while the
+H2C engine can still read them.
 
 ## Completion and Timeout
 

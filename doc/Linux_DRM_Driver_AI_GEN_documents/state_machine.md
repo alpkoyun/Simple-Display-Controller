@@ -13,12 +13,13 @@ stateDiagram-v2
     PCIRegistered --> Probing: PCI match
     Probing --> FrameBuffersReady: fpga_drm_alloc_frame_buffers
     FrameBuffersReady --> XDMAOpen: fpga_drm_open_xdma
-    XDMAOpen --> PipelineConfigured: fpga_drm_configure_pipeline
+    XDMAOpen --> PipelineConfigured: fpga_drm_configure_static_pipeline
     PipelineConfigured --> KMSReady: fpga_drm_modeset_init
     KMSReady --> DRMRegistered: drm_dev_register
     DRMRegistered --> ConnectorConnected: default connector mode
     DRMRegistered --> ConnectorDisconnected: diagnostic disconnected override
-    ConnectorConnected --> PipeEnabled: fpga_drm_pipe_enable
+    ConnectorConnected --> ModeProgrammed: fpga_drm_pipe_enable
+    ModeProgrammed --> PipeEnabled: fpga_drm_program_mode
     PipeEnabled --> UploadQueued: fpga_drm_mark_dirty
     UploadQueued --> DMAInFlight: xdma_xfer_submit_lines_nowait
     DMAInFlight --> Completing: callback or timeout
@@ -36,12 +37,13 @@ stateDiagram-v2
 
 | State | Meaning |
 |---|---|
-| `FrameBuffersReady` | 720 line buffers and `frame_sgt` have been allocated. |
+| `FrameBuffersReady` | 1080 max-width line buffers and `frame_sgt` have been allocated. |
 | `XDMAOpen` | `xdma_device_open()` succeeded, the bypass BAR is selected for MMIO, and the selected H2C channel is valid. |
-| `PipelineConfigured` | Pixel unpack, color convert, VDMA, HDMI I2C, VTC, and video-lock registers have been programmed through the bypass BAR. |
+| `PipelineConfigured` | Static video IP state such as pixel unpack, color convert, HDMI I2C, and video-lock GPIO has been programmed through the bypass BAR. |
 | `KMSReady` | Mode config, virtual connector, and simple display pipe exist. |
 | `DRMRegistered` | Userspace can see `/dev/dri/cardN`. |
-| `ConnectorConnected` | The driver advertises the fixed 1280x720 mode. This is the default. |
+| `ConnectorConnected` | The driver advertises the supported-mode whitelist. This is the default. |
+| `ModeProgrammed` | Clock wizard, VDMA, and VTC have been programmed for the selected KMS mode. |
 | `ConnectorDisconnected` | Diagnostic mode when the connector is manually forced disconnected. |
 | `DMAInFlight` | One async frame upload is queued in the XDMA core. |
 | `Completing` | Callback or timeout has scheduled `dma_complete_work`. |

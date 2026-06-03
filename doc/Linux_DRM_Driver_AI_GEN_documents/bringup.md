@@ -31,7 +31,7 @@ upload_full_frame=1
 configure_pipeline=1
 ```
 
-On load, `dmesg` should show the XDMA MMIO BAR index/length, the fixed
+On load, `dmesg` should show the XDMA MMIO BAR index/length, the
 AXI-Lite register ranges from `PCIe.hwh`, and the DDR frame ring used by VDMA.
 The current hardware exposes the video AXI-Lite aperture through the XDMA
 bypass BAR. Expected register ranges are:
@@ -46,14 +46,28 @@ video_clk_wiz      0x00060000-0x0006ffff
 video_lock_gpio    0x00070000-0x0007ffff
 ```
 
-The driver then configures pixel unpack, color conversion, VDMA S2MM/MM2S at
-`0x00040000`, HDMI I2C, VTC, and prints VDMA/VTC/video-lock readbacks before
-registering the DRM device. The VDMA frame addresses remain DDR addresses,
-currently starting at `0x81000000`; they are not bypass BAR offsets.
+During probe the driver validates the BAR ranges, configures static video IP
+state such as pixel unpack, color conversion, HDMI I2C, and video-lock GPIO,
+then registers the DRM device. VDMA, VTC, and the video clock wizard are
+programmed during KMS enable/modeset for the selected mode. The VDMA frame
+addresses remain DDR addresses, currently starting at `0x81000000`; they are
+not bypass BAR offsets. Frame spacing is sized for the largest supported mode
+so frame buffers do not overlap after mode switches.
 
-The FPGA should appear as a DRM card with one 1280x720 output. If the desktop
-stack does not list it, verify that the FPGA PCIe function enumerates as a
-display-class device and that `fpga_drm.ko` owns the PCI function.
+The FPGA should appear as a DRM card with these connector modes:
+
+| Mode | Pixel clock |
+|---|---:|
+| `640x480@60` | `25.175 MHz` |
+| `800x600@60` | `40.000 MHz` |
+| `1024x768@60` | `65.000 MHz` |
+| `1280x720@60` | `74.250 MHz` |
+| `1280x1024@60` | `108.000 MHz` |
+| `1920x1080@60` | `148.500 MHz` |
+
+If the desktop stack does not list it, verify that the FPGA PCIe function
+enumerates as a display-class device and that `fpga_drm.ko` owns the PCI
+function.
 
 ## Optional Direct KMS Test
 
@@ -67,6 +81,10 @@ modetest -M fpga_drm -c -p
 modetest -M fpga_drm -s 31@34:1280x720-60@XR24
 modetest -M fpga_drm -s 31@34:1280x720-60 -P 32@34:1280x720+0+0@XR24 -F smpte
 ```
+
+For mode smoke testing, repeat the `-s`/`-P` pair with each advertised mode and
+the matching plane size, for example `1920x1080-60@XR24` and
+`1920x1080+0+0@XR24`.
 
 `failed to set gamma: Function not implemented` is acceptable for this minimal
 driver when the mode set proceeds.
@@ -104,8 +122,9 @@ sudo rmmod fpga_drm
 sudo insmod Linux_DRM_Driver/fpga_drm/fpga_drm.ko upload_enabled=0 debug_logging=1
 ```
 
-This still configures the FPGA video pipeline. To isolate DRM registration from
-all video-IP register writes, add `configure_pipeline=0`.
+This still configures static video IP state and will program timing on a KMS
+modeset. To isolate DRM registration from all video-IP register writes, add
+`configure_pipeline=0`.
 
 Manual safe visibility mode:
 

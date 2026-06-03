@@ -5,15 +5,17 @@
 | Allocation | Function | Owner | Free path |
 |---|---|---|---|
 | `struct fpga_drm_device` | `devm_drm_dev_alloc()` in `fpga_drm_probe()` | Device-managed DRM object | Device-managed cleanup. |
-| `frame_sgt` | `sg_alloc_table(..., FPGA_DRM_HEIGHT, ...)` in `fpga_drm_alloc_frame_buffers()` | `struct fpga_drm_device` | `fpga_drm_free_frame_sgt()` via DRM-managed action. |
-| `line_bufs[720]` | `drmm_kmalloc(..., FPGA_DRM_LINE_BYTES, ...)` | `struct fpga_drm_device` | DRM-managed cleanup. |
+| `frame_sgt` | `sg_alloc_table(..., FPGA_DRM_MAX_HEIGHT, ...)` in `fpga_drm_alloc_frame_buffers()` | `struct fpga_drm_device` | `fpga_drm_free_frame_sgt()` via DRM-managed action. |
+| `active_frame_sgt` | Per-submit view of `frame_sgt` | `struct fpga_drm_device` | No separate allocation; uses `frame_sgt.sgl`. |
+| `line_bufs[1080]` | `drmm_kmalloc(..., FPGA_DRM_MAX_LINE_BYTES, ...)` | `struct fpga_drm_device` | DRM-managed cleanup. |
 | XDMA core device | `xdma_device_open()` | `libxdma` | `xdma_device_close()` via `fpga_drm_close_xdma()`. |
 | XDMA descriptor pool | `engine_alloc_resource()` | Per XDMA engine | `engine_free_resource()`. |
 | XDMA request | `xdma_xfer_submit_lines_nowait()` | Current async frame upload | `xdma_xfer_completion()` or submit error path. |
 
-The display frame staging area is 720 * 5120 bytes, split across 720 line
-buffers. The SG table points at those line buffers for the lifetime of the DRM
-device.
+The display frame staging area is sized for `1920x1080` XRGB8888 and split
+across 1080 line buffers. The persistent SG table points at those line buffers
+for the lifetime of the DRM device. Each upload prepares `active_frame_sgt`
+with the selected mode's active height and line byte length.
 
 ## Frame DMA Lifecycle
 
@@ -24,10 +26,10 @@ sequenceDiagram
     participant Submit as fpga_drm_submit_frame_nowait
     participant XDMA as xdma_xfer_submit_lines_nowait
     participant Done as fpga_drm_dma_complete_work
-    Probe->>Probe: allocate 720 line_bufs
-    Probe->>Probe: allocate frame_sgt with 720 entries
+    Probe->>Probe: allocate 1080 max-width line_bufs
+    Probe->>Probe: allocate frame_sgt with 1080 entries
     Copy->>Copy: memcpy framebuffer lines into line_bufs
-    Submit->>XDMA: submit frame_sgt, line_size=5120, line_count=720
+    Submit->>XDMA: submit active_frame_sgt, line_size=active_width*4, line_count=active_height
     XDMA->>XDMA: dma_map_sg
     XDMA->>XDMA: build descriptors with EOP at each line boundary
     XDMA-->>Submit: -EIOCBQUEUED

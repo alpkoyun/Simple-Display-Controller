@@ -38,7 +38,6 @@ __used __section("__versions") = {
 	{ 0x83da000e, "param_ops_ullong" },
 	{ 0x7f3b62fe, "drm_open" },
 	{ 0xc1514a3b, "free_irq" },
-	{ 0xf1b5340a, "drm_mode_vrefresh" },
 	{ 0xc80ab559, "swake_up_one" },
 	{ 0xa78af5f3, "ioread32" },
 	{ 0xdc880cef, "drm_poll" },
@@ -50,6 +49,7 @@ __used __section("__versions") = {
 	{ 0x920e8334, "pci_alloc_irq_vectors" },
 	{ 0x656e4a6e, "snprintf" },
 	{ 0xc5b6f236, "queue_work_on" },
+	{ 0x9c11e3fb, "drm_mode_probed_add" },
 	{ 0x69b825f7, "drm_gem_shmem_dumb_create" },
 	{ 0xc8c85086, "sg_free_table" },
 	{ 0x48d88a2c, "__SCT__preempt_schedule" },
@@ -62,8 +62,8 @@ __used __section("__versions") = {
 	{ 0x6df1aaf1, "kernel_sigaction" },
 	{ 0xd4defbf9, "pci_request_regions" },
 	{ 0x48d7031e, "drm_mode_object_get" },
+	{ 0x69acdf38, "memcpy" },
 	{ 0x37a0cba, "kfree" },
-	{ 0xfe5020b5, "drm_connector_helper_get_modes_fixed" },
 	{ 0x7ab1f0cb, "pcpu_hot" },
 	{ 0xc3055d20, "usleep_range_state" },
 	{ 0x8c26d495, "prepare_to_wait_event" },
@@ -121,14 +121,17 @@ __used __section("__versions") = {
 	{ 0x4c9d28b0, "phys_base" },
 	{ 0x53a1e8d9, "_find_next_bit" },
 	{ 0x5a5a2271, "__cpu_online_mask" },
+	{ 0x1126c0d7, "drm_mode_duplicate" },
 	{ 0x689f3974, "kthread_stop" },
 	{ 0xcefb0c9f, "__mutex_init" },
+	{ 0x4a35d30d, "drm_mode_set_name" },
 	{ 0xd35cce70, "_raw_spin_unlock_irqrestore" },
 	{ 0x71cf81bb, "pci_iounmap" },
 	{ 0x3dad9978, "cancel_delayed_work" },
 	{ 0x617931ae, "__devm_drm_dev_alloc" },
 	{ 0xe82eafbd, "drm_gem_shmem_prime_import_sg_table" },
 	{ 0xfb578fc5, "memset" },
+	{ 0x36d2243, "_dev_warn" },
 	{ 0xd0082417, "drmm_kmalloc" },
 	{ 0x6794def6, "pci_set_master" },
 	{ 0x5b8239ca, "__x86_return_thunk" },
@@ -247,4 +250,4 @@ MODULE_ALIAS("pci:v000010EEd00004A28sv*sd*bc*sc*i*");
 MODULE_ALIAS("pci:v000010EEd00004B28sv*sd*bc*sc*i*");
 MODULE_ALIAS("pci:v000010EEd00002808sv*sd*bc*sc*i*");
 
-MODULE_INFO(srcversion, "932ACF4C798B6169B86D5F0");
+MODULE_INFO(srcversion, "9FD9A384D19CAFEE1DC99BD");
