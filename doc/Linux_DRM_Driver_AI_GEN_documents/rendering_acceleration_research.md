@@ -1,6 +1,7 @@
 # Rendering Acceleration Research
 
 Research date: 2026-06-05
+Updated validation checkpoint: 2026-06-10
 
 This note answers whether the FPGA display controller can gain a rendering
 operation that Linux will automatically use, and what would be required to make
@@ -40,13 +41,37 @@ The current kernel driver matches that model:
 - The DRM driver feature flags are `DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC`.
   There is no `DRIVER_RENDER`.
 - The mode config uses standard framebuffer creation and atomic commit helpers.
-- The display pipe is a `drm_simple_display_pipe`.
+- The driver uses explicit KMS objects for one CRTC, one primary plane, one
+  virtual encoder, and one virtual connector.
+- An experimental `enable_overlay=1` path exposes one extra standard KMS overlay
+  plane and CPU-composites it into the existing XDMA upload staging path.
 - The only advertised scanout format is `DRM_FORMAT_XRGB8888`.
 - The only advertised modifier is `DRM_FORMAT_MOD_LINEAR`.
 - The driver uses GEM SHMEM helpers for host-visible framebuffer objects.
 - There are no private DRM ioctls in `fpga_drm_drv.c`.
-- On KMS enable/update, the driver copies the active framebuffer into host line
-  buffers and submits the frame to XDMA as per-line H2C packets.
+- On KMS enable/update, the driver copies the active primary framebuffer, and
+  optionally the overlay rectangle, into host line buffers and submits the
+  composed frame to XDMA as per-line H2C packets.
+
+Validated behavior on 2026-06-10:
+
+- The repo-built and installed `fpga_drm.ko` matched with srcversion
+  `E1CC69967649F5D3185976E`.
+- The driver loaded with
+  `debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1`.
+- GDM/Xorg picked up `/dev/dri/card0` automatically after the display manager
+  was started, and the desktop was visible through the FPGA HDMI output.
+- `drm_info /dev/dri/card0` showed an active CRTC, active primary plane, and
+  inactive overlay plane. The overlay plane existed, but had `FB_ID=0`.
+- Kernel logs showed repeated XDMA frame uploads with `overlay=0`, which means
+  the desktop was using the driver as a KMS scanout device but was not using the
+  CPU overlay composition path.
+- A direct `modetest` SMPTE upload produced visible HDMI output and active XDMA
+  stream traffic.
+- Because the video-output ILA was removed from the current hardware, the
+  validation script was updated to use `PCIe_i/xdma_ila/inst/ila_lib`. A
+  trigger on `net_slot_0_axis_tvalid` captured 797 valid/ready handshakes in
+  1024 samples, with nonzero `net_slot_0_axis_tdata`.
 
 Relevant local source:
 
@@ -119,11 +144,16 @@ Minimum pieces:
 | Buffer import or upload path | The plane needs access to the image data |
 | Fence handling | KMS must not scan out a buffer before rendering/upload into it is complete |
 
-Current driver gap: `drm_simple_display_pipe` gives one simple primary plane.
-It is excellent for bring-up, but it is not the right abstraction once the
-hardware exposes multiple planes, blending, scaling, cursor, or shared pipeline
-limits. At that point the driver should move toward explicit CRTC/plane/encoder
-objects or carefully extend beyond the simple-pipe model.
+Current driver state: the KMS object model has moved beyond
+`drm_simple_display_pipe`, and the optional overlay plane can prove compositor
+discovery and atomic-test behavior before FPGA composition hardware exists. The
+overlay is still CPU-composited; it is not yet hardware acceleration.
+
+The next immediate test should not depend on GNOME or Xorg choosing the overlay
+plane. Write a direct KMS overlay test that creates a full-screen primary
+framebuffer plus a smaller overlay framebuffer, commits both planes atomically,
+and checks for `overlay=1` plus a nonzero `cpu_compositions` counter in the
+driver logs. This isolates driver correctness from compositor policy.
 
 ### 2. Private 2D Engine
 
@@ -659,6 +689,21 @@ build a full GPU first. Add KMS-visible display-composition features:
 
 Compositors already understand those concepts. They may use them when the plane
 constraints fit a window, cursor, fullscreen surface, or video surface.
+
+From the 2026-06-10 checkpoint, the next concrete steps are:
+
+1. Write a direct KMS overlay-plane test that commits primary plus overlay.
+2. Confirm the driver logs `overlay=1` and increments `cpu_compositions`.
+3. Add focused failure logging for overlay atomic-check rejects, including
+   format, scaling, bounds, CRTC, and framebuffer reasons.
+4. Add compositor-friendly standard plane properties, starting with immutable
+   `rotation=0`, then global alpha and pixel blend mode if the CPU backend can
+   implement the same semantics.
+5. Test with Weston DRM backend before GNOME/KDE, because Weston makes KMS
+   plane assignment easier to observe and reason about.
+6. After CPU overlay is proven, choose the first FPGA-backed display operation:
+   hardware cursor or fixed-format overlay blend are the smallest useful
+   candidates.
 
 If the goal is "an application can ask the FPGA to render something", build a
 private 2D command engine and a small userspace library. That is much more

@@ -52,13 +52,13 @@ uses the vendored XDMA core to transfer the committed framebuffer to the FPGA.
 
 | State | Purpose |
 |---|---|
-| `struct fpga_drm_device` | Per-device DRM, PCI, XDMA, connector, pipe, upload, DMA, and diagnostic state. |
+| `struct fpga_drm_device` | Per-device DRM, PCI, XDMA, CRTC, planes, encoder, connector, upload, DMA, and diagnostic state. |
 | `frame_sgt` | Max-height SG table, one entry per line buffer. |
 | `active_frame_sgt` | Per-submit SG-table view sized to the active mode height. |
 | `line_bufs[1080]` | DRM-managed max-width host buffers containing the active-mode frame submitted to XDMA. |
 | `active_mode` | Current whitelist mode used for framebuffer validation, VDMA/VTC/clock setup, and DMA completion length checks. |
 | `frame_cb` | `struct xdma_io_cb` used for async XDMA callback and request tracking. |
-| `upload_fb`, `upload_map`, `upload_rect` | Latest framebuffer state captured from DRM shadow-plane callbacks. |
+| `primary`, `overlay` | Latest primary and optional overlay plane snapshots captured during CRTC atomic flush. |
 | `dma_inflight`, `dma_completion_pending`, `upload_pending` | Serialized async frame-upload state. |
 
 ## Subsystems
@@ -66,7 +66,7 @@ uses the vendored XDMA core to transfer the committed framebuffer to the FPGA.
 | Subsystem | Usage |
 |---|---|
 | PCI | `module_pci_driver(fpga_drm_pci_driver)` binds the XDMA function. |
-| DRM/KMS | `drm_simple_display_pipe`, connector helpers, atomic helpers, GEM SHMEM helpers. |
+| DRM/KMS | Explicit CRTC, primary plane, optional overlay plane, virtual encoder, connector helpers, atomic helpers, GEM SHMEM helpers. |
 | fbdev | `drm_fbdev_generic_setup(drm, 32)` when `enable_fbdev=1`. |
 | DMA mapping | Performed inside `libxdma` for the frame SG table. |
 | IRQ/workqueues | XDMA IRQ/poll completion is handled by `libxdma`; DRM frame completion is finalized in `dma_complete_work`. |
@@ -83,11 +83,14 @@ flowchart TD
     Probe --> VP[configure static video IPs through bypass BAR]
     Probe --> DRM[DRM mode config and register]
     DRM --> Conn[virtual connector: whitelist modes]
-    DRM --> Pipe[drm_simple_display_pipe]
-    Pipe --> Modeset[program clock wizard, VTC, VDMA]
-    Pipe --> Shadow[GEM SHMEM shadow framebuffer]
+    DRM --> CRTC[explicit CRTC]
+    DRM --> Primary[primary plane: full-screen XRGB8888]
+    DRM --> Overlay[optional overlay plane: XRGB8888 no scaling]
+    CRTC --> Modeset[program clock wizard, VTC, VDMA]
+    Primary --> Shadow[GEM SHMEM shadow framebuffer]
+    Overlay --> Shadow
     Shadow --> Work[upload_work]
-    Work --> Copy[fpga_drm_copy_frame]
+    Work --> Copy[compose primary and optional overlay into line buffers]
     Copy --> Submit[xdma_xfer_submit_lines_nowait]
     Submit --> FPGA[FPGA H2C line-packet stream]
 ```

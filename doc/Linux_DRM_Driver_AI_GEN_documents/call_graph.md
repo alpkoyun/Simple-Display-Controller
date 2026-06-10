@@ -9,8 +9,10 @@
 | `fpga_drm_program_mode()` | Programs the video clock wizard, VDMA, and VTC for a KMS mode. |
 | `fpga_drm_remove()` | PCI remove and upload shutdown. |
 | `fpga_drm_shutdown()` | System shutdown KMS cleanup. |
-| `fpga_drm_pipe_enable()` | DRM atomic enable callback. |
-| `fpga_drm_pipe_update()` | DRM atomic update callback. |
+| `fpga_drm_crtc_atomic_enable()` | DRM CRTC enable callback; programs the selected whitelist mode. |
+| `fpga_drm_crtc_atomic_flush()` | DRM CRTC flush callback; snapshots primary/overlay plane state and queues upload. |
+| `fpga_drm_primary_atomic_check()` | Primary-plane atomic validation. |
+| `fpga_drm_overlay_atomic_check()` | Optional overlay-plane atomic validation when `enable_overlay=1`. |
 | `fpga_drm_upload_work()` | Workqueue function that submits the current frame. |
 | `fpga_drm_xdma_done()` | XDMA async completion callback. |
 | `fpga_drm_dma_complete_work()` | Workqueue completion finalizer. |
@@ -34,8 +36,11 @@ flowchart TD
     Q --> R[program pixel unpack and color convert]
     Q --> T[program HDMI I2C and video-lock GPIO]
     B --> L[fpga_drm_modeset_init]
-    L --> M[drm_connector_init]
-    L --> N[drm_simple_display_pipe_init]
+    L --> M[drm_universal_plane_init primary]
+    L --> N[drm_crtc_init_with_planes]
+    L --> V[drm_universal_plane_init overlay if enabled]
+    L --> W[drm_encoder_init virtual encoder]
+    L --> X[drm_connector_init virtual connector]
     B --> O[drm_dev_register]
     B --> P[drm_fbdev_generic_setup if enabled]
 ```
@@ -48,12 +53,14 @@ flowchart TD
     Core --> AddFB[addfb or dumb/GEM buffer ioctls]
     AddFB --> FBCreate[drm_gem_fb_create_with_dirty]
     Core --> Commit[atomic commit]
-    Commit --> Enable[fpga_drm_pipe_enable]
-    Commit --> Update[fpga_drm_pipe_update]
+    Commit --> CheckP[fpga_drm_primary_atomic_check]
+    Commit --> CheckO[fpga_drm_overlay_atomic_check if enabled]
+    Commit --> Enable[fpga_drm_crtc_atomic_enable]
+    Commit --> Flush[fpga_drm_crtc_atomic_flush]
     Enable --> Mode[fpga_drm_program_mode]
-    Mode --> Mark[fpga_drm_mark_dirty]
-    Update --> Mark
-    Mark --> Schedule[schedule upload_work]
+    Flush --> Snap[snapshot primary and overlay plane state]
+    Snap --> Queue[fpga_drm_queue_commit_upload]
+    Queue --> Schedule[schedule upload_work]
 ```
 
 ## DMA Path Used by `fpga_drm`

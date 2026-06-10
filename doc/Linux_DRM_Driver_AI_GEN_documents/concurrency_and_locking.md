@@ -5,7 +5,8 @@
 | Function | Context |
 |---|---|
 | `fpga_drm_probe()` / `fpga_drm_remove()` / `fpga_drm_shutdown()` | PCI driver process context. |
-| `fpga_drm_pipe_enable()` / `fpga_drm_pipe_disable()` / `fpga_drm_pipe_update()` | DRM atomic commit context. |
+| `fpga_drm_crtc_atomic_enable()` / `fpga_drm_crtc_atomic_disable()` / `fpga_drm_crtc_atomic_flush()` | DRM atomic commit context. |
+| `fpga_drm_primary_atomic_check()` / `fpga_drm_overlay_atomic_check()` | DRM atomic check context. |
 | `fpga_drm_upload_work()` | Workqueue context; may sleep. |
 | `fpga_drm_xdma_done()` | XDMA completion callback context from `libxdma`. It only records completion and schedules work. |
 | `fpga_drm_dma_complete_work()` | Workqueue context; calls `xdma_xfer_completion()`. |
@@ -17,7 +18,7 @@
 
 | Lock | Type | Protects |
 |---|---|---|
-| `upload_lock` | mutex | `upload_fb`, `upload_map`, `upload_rect`, and `pipe_enabled`. |
+| `upload_lock` | mutex | Primary and overlay plane snapshots plus `pipe_enabled`. |
 | `dma_lock` | mutex | The submit/completion critical path around `xdma_xfer_submit_lines_nowait()` and `xdma_xfer_completion()`. |
 | `dma_state_lock` | spinlock irqsave | `dma_inflight`, `dma_completion_pending`, `dma_completion_err`, and `upload_pending`. |
 | `dma_idle_wq` | wait queue | Remove/disable waiting for the in-flight DMA state to become idle. |

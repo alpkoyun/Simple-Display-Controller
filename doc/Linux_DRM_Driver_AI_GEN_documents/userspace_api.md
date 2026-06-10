@@ -6,12 +6,13 @@
 a normal modeset-capable display with one virtual connector and a whitelist of
 supported timings. There are no private DRM ioctls, no private character
 devices, no local debugfs files, and no custom sysfs ABI beyond module
-parameters.
+parameters. The driver does not expose a render node.
 
 | Interface | Status |
 |---|---|
 | `/dev/dri/cardN` | Created by `drm_dev_register()`. |
 | DRM mode setting | Standard connector/CRTC/plane APIs. |
+| Overlay plane | Optional standard KMS overlay plane when `enable_overlay=1`. |
 | GEM buffers and mmap | Provided by GEM SHMEM helpers. |
 | fbdev | Created by `drm_fbdev_generic_setup(drm, 32)` when `enable_fbdev=1`. |
 | `/dev/xdma*` nodes | Not created by `fpga_drm.ko`; those belong to standalone `xdma.ko`. |
@@ -22,6 +23,9 @@ parameters.
 |---|---|
 | Connector type | `DRM_MODE_CONNECTOR_VIRTUAL`. |
 | Connection status | Controlled by `connector_connected`; default connected. |
+| KMS objects | One explicit CRTC, primary plane, virtual encoder, and virtual connector. |
+| Primary plane | Full-screen linear `DRM_FORMAT_XRGB8888`. |
+| Overlay plane | Optional linear `DRM_FORMAT_XRGB8888`; no scaling, rotation, alpha, or out-of-bounds placement. |
 | Mode list | Whitelist of common 30 Hz and 60 Hz modes up to `148.5 MHz`. |
 | Mode validation | Rejects modes outside the whitelist or above `148.5 MHz`. |
 | Format | `DRM_FORMAT_XRGB8888` only. |
@@ -59,6 +63,24 @@ normal desktop stacks should be able to see the output through `xrandr` or the
 usual KMS enumeration tools. `modetest` remains useful for direct KMS testing,
 but it is not the primary desktop integration path.
 
+Validated desktop load parameters for the current explicit-KMS driver are:
+
+```sh
+sudo modprobe fpga_drm \
+  debug_logging=1 \
+  enable_overlay=1 \
+  composition_backend=cpu \
+  connector_connected=1 \
+  connector_non_desktop=0 \
+  enable_fbdev=1
+```
+
+With those parameters, GDM/Xorg has been observed to pick up `/dev/dri/card0`,
+set `1280x720@60`, and display the desktop through the FPGA output. In that
+desktop state the primary plane is active, but the overlay plane may remain
+unused by the compositor. That means the driver is doing KMS scanout and XDMA
+frame upload, but not necessarily exercising the CPU overlay-composition path.
+
 ## Module Parameters
 
 | Parameter | Type | Default | Effect |
@@ -72,6 +94,14 @@ but it is not the primary desktop integration path.
 | `upload_enabled` | bool | `true` | Enables XDMA frame upload; set to false for DRM-only diagnostics. |
 | `debug_logging` | bool | `false` | Enables extra connector, modeset, upload, and DMA logs. |
 | `configure_pipeline` | bool | `true` | Programs FPGA video IPs through the XDMA bypass BAR during probe and modeset. |
+| `enable_overlay` | bool | `false` | Exposes one experimental CPU-composited KMS overlay plane. |
+| `composition_backend` | charp | `cpu` | Selects the composition backend. Only `cpu` is implemented; `fpga` is reserved for later hardware composition. |
+
+With `enable_overlay=1`, atomic checks reject unsupported overlay states:
+non-`XRGB8888` buffers, non-linear modifiers, scaling, out-of-bounds
+rectangles, and disabled-CRTC updates. The CPU backend copies the primary
+framebuffer into the existing line staging buffers, overwrites the overlay
+rectangle, and submits the composed frame through the same XDMA H2C upload path.
 
 Because `libxdma.c` is linked into `fpga_drm.ko`, its module parameters are
 also present. The most relevant are `poll_mode`, `interrupt_mode`,
@@ -100,21 +130,22 @@ installed `modetest` build does not reliably honor `-D /dev/dri/card0`.
 ```sh
 drm_info /dev/dri/card0
 modetest -M fpga_drm -c -p
-modetest -M fpga_drm -s 31@34:1280x720-60@XR24
-modetest -M fpga_drm -s 31@34:1280x720-60 -P 32@34:1280x720+0+0@XR24 -F smpte
+modetest -M fpga_drm -s <connector>@<crtc>:1280x720-60@XR24
+modetest -M fpga_drm -s <connector>@<crtc>:1280x720-60 -P <primary>@<crtc>:1280x720+0+0@XR24 -F smpte
 ```
 
 For other advertised modes, replace both the mode and plane size in the
 `modetest` command, for example:
 
 ```sh
-modetest -M fpga_drm -s 31@34:1920x1080-60 -P 32@34:1920x1080+0+0@XR24 -F smpte
-modetest -M fpga_drm -s 31@34:1920x1080-30 -P 32@34:1920x1080+0+0@XR24 -F smpte
+modetest -M fpga_drm -s <connector>@<crtc>:1920x1080-60 -P <primary>@<crtc>:1920x1080+0+0@XR24 -F smpte
+modetest -M fpga_drm -s <connector>@<crtc>:1920x1080-30 -P <primary>@<crtc>:1920x1080+0+0@XR24 -F smpte
 ```
 
-Validated current object IDs are connector `31`, CRTC `34`, and primary plane
-`32`. Reconfirm them with `modetest -M fpga_drm -c -p` after reloads or driver
-changes.
+Object IDs are not stable across driver reloads. In the current validated
+session they were connector `39`, CRTC `34`, primary plane `31`, and overlay
+plane `35`. Reconfirm them with `modetest -M fpga_drm -c -p` after reloads or
+driver changes.
 
 If `drm_info /dev/dri/card0` reports `Permission denied`, fix the device-node
 ACL first:
@@ -144,3 +175,51 @@ interfaces exist only when standalone `xdma.ko` is built and loaded.
 
 Do not load standalone `xdma.ko` at the same time as `fpga_drm.ko` for the
 same PCI function.
+
+## XDMA ILA Validation
+
+The current hardware no longer contains the video-output ILA at the HDMI output
+IP. The remaining validation probe for live frame traffic is the XDMA ILA:
+
+```text
+PCIe_i/xdma_ila/inst/ila_lib
+```
+
+The repo-local capture script targets this ILA by default:
+
+```sh
+mkdir -p tmp_ila_capture
+/home/alpk/xilinx/Vivado/2023.2/bin/vivado -mode batch -nojournal -nolog -notrace \
+  -source scripts/capture_video_stream_ila.tcl \
+  -tclargs fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx tmp_ila_capture tvalid xdma
+```
+
+Current XDMA stream probe mapping:
+
+| Signal | ILA probe |
+|---|---|
+| `TDATA` | `PCIe_i/xdma_ila/inst/net_slot_0_axis_tdata` |
+| `TKEEP` | `PCIe_i/xdma_ila/inst/net_slot_0_axis_tkeep` |
+| `TVALID` | `PCIe_i/xdma_ila/inst/net_slot_0_axis_tvalid` |
+| `TREADY` | `PCIe_i/xdma_ila/inst/net_slot_0_axis_tready` |
+| `TLAST` | `PCIe_i/xdma_ila/inst/net_slot_0_axis_tlast` |
+
+After arming the ILA on `TVALID`, generate traffic with a direct KMS upload:
+
+```sh
+modetest -M fpga_drm -s <connector>@<crtc>:1280x720-60 \
+  -P <primary>@<crtc>:1280x720+0+0@XR24 -F smpte
+```
+
+A validated capture on 2026-06-10 wrote
+`tmp_ila_capture/xdma_ila_tvalid.csv` and showed:
+
+```text
+samples=1024
+tvalid=797
+tready=1024
+handshake=797
+tlast=2
+unique_tdata=12
+nonzero_tdata=1024
+```

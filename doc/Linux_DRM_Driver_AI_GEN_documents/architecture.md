@@ -27,7 +27,8 @@ while using XDMA H2C AXI-stream to deliver each rendered frame to the FPGA.
 
 `fpga_drm.ko` is a PCI DRM driver. It binds the Xilinx PCIe XDMA function,
 opens the vendored XDMA core with `xdma_device_open()`, and registers one DRM
-device with one virtual connector and one `drm_simple_display_pipe`.
+device with explicit KMS objects: one CRTC, one primary plane, an optional
+overlay plane, one virtual encoder, and one virtual connector.
 Before DRM registration it requires a mapped XDMA MMIO BAR and runs
 `fpga_drm_configure_static_pipeline()` to validate the bypass BAR map and
 program static video IP state. On each KMS enable/modeset,
@@ -50,25 +51,29 @@ honor `-D /dev/dri/card0`, so the module selector is the preferred direct KMS
 test path.
 
 Vivado ILA validation uses the matching
-`fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx`. The current bitstream exposes a
-video stream ILA at `PCIe_i/hdmi_out/video_stream_ila/inst/ila_lib`; after a
-`modetest -F smpte` upload, the ILA should show `tvalid && tready` handshakes
-and nonzero 24-bit `tdata` values.
+`fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx`. The current bitstream no longer
+contains the HDMI video-output ILA, so live frame-traffic validation uses the
+XDMA ILA at `PCIe_i/xdma_ila/inst/ila_lib`; after a `modetest -F smpte` upload,
+the ILA should show `tvalid && tready` handshakes, nonzero `tdata`, and more
+than one unique `tdata` value.
 
 ## Frame Upload Model
 
 The current upload path is asynchronous at frame granularity:
 
-1. `fpga_drm_pipe_enable()` or `fpga_drm_pipe_update()` marks the current
-   framebuffer dirty.
-2. `fpga_drm_mark_dirty()` stores the framebuffer reference and shadow-plane
-   map, then schedules `upload_work`.
-3. `fpga_drm_upload_work()` serializes against any in-flight frame.
-4. `fpga_drm_copy_frame()` copies the active-mode XRGB8888 framebuffer into
-   DRM-managed max-width line buffers.
-5. `xdma_xfer_submit_lines_nowait()` submits the active-mode SG-table view to
+1. Plane atomic checks validate the primary and optional overlay framebuffer
+   state.
+2. `fpga_drm_crtc_atomic_enable()` programs the selected whitelist mode on
+   enable/modeset.
+3. `fpga_drm_crtc_atomic_flush()` snapshots the primary and optional overlay
+   plane state, then queues `upload_work`.
+4. `fpga_drm_upload_work()` serializes against any in-flight frame.
+5. `fpga_drm_copy_frame()` copies the active-mode XRGB8888 primary framebuffer
+   into DRM-managed max-width line buffers and CPU-composites the optional
+   overlay rectangle when enabled and active.
+6. `xdma_xfer_submit_lines_nowait()` submits the active-mode SG-table view to
    the streaming H2C engine.
-6. `fpga_drm_xdma_done()`, `fpga_drm_dma_complete_work()`, and
+7. `fpga_drm_xdma_done()`, `fpga_drm_dma_complete_work()`, and
    `fpga_drm_dma_timeout_work()` finish or fail the in-flight frame.
 
 Only one frame upload is in flight. If userspace updates while DMA is busy, the

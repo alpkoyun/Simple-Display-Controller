@@ -14,7 +14,9 @@ In this Hardware Architecture, the XDMA IP acts as the master of the transfers. 
 
 # Current Status of the Project
 ## Linux DRM Driver
-The current `fpga_drm.ko` driver is a whitelist-based DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes one virtual connector, advertises common 30 Hz and 60 Hz modes up to a `148.5 MHz` pixel clock, accepts `XRGB8888` framebuffers, and uploads complete frames through the XDMA H2C stream path. Userspace changes resolution with normal KMS modesets; the driver then reprograms the video clock wizard, VTC, and VDMA for the selected mode through the XDMA bypass BAR.
+The current `fpga_drm.ko` driver is a whitelist-based DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes explicit KMS objects for one CRTC, one primary plane, one virtual encoder, and one virtual connector, advertises common 30 Hz and 60 Hz modes up to a `148.5 MHz` pixel clock, accepts linear `XRGB8888` framebuffers, and uploads complete frames through the XDMA H2C stream path. Userspace changes resolution with normal KMS modesets; the driver then reprograms the video clock wizard, VTC, and VDMA for the selected mode through the XDMA bypass BAR.
+
+An experimental overlay path is available with `enable_overlay=1`. It exposes one additional linear `XRGB8888` KMS overlay plane and composites it in CPU code into the existing XDMA upload staging buffers. The default remains `enable_overlay=0`; there is still no `DRIVER_RENDER`, render node, private render ioctl, or Mesa userspace driver.
 
 Supported modes:
 
@@ -33,7 +35,7 @@ Supported modes:
 | `1920x1080@60` | `148.500 MHz` |
 | `1920x1080@30` | `74.250 MHz` |
 
-The current bring-up has been validated with `drm_info`, `modetest -M fpga_drm`, and Vivado ILA capture. After a `modetest` SMPTE pattern upload, the video-stream ILA showed active `tvalid && tready` handshakes and nonzero 24-bit pixel data on the HDMI output stream.
+The current bring-up has been validated with `drm_info`, `modetest -M fpga_drm`, GDM/Xorg desktop pickup, and Vivado ILA capture. With the driver loaded using `debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1`, GDM picked up `/dev/dri/card0` and displayed the desktop through the FPGA output. A direct `modetest` SMPTE pattern upload also produced visible HDMI output. The video-output ILA has been removed from the current hardware, so live stream validation now uses the XDMA ILA at `PCIe_i/xdma_ila/inst/ila_lib`; a recent trigger on `net_slot_0_axis_tvalid` captured 797 `tvalid && tready` handshakes in 1024 samples with nonzero `net_slot_0_axis_tdata`.
 The 30 Hz modes keep the same active resolution as their 60 Hz counterparts and lower the video pixel clock; they reduce display-stream bandwidth, but each full-frame PCIe upload still carries `active_width * active_height * 4` bytes.
 ![Demo Setup](doc/visuals/Demo.png)
 ## Hardware
@@ -44,4 +46,6 @@ Hardware supports the driver whitelist up to `1920x1080@60` and the lower-clock 
 ## Hardware
 Keep the exported `fpga_hardware/PCIe_wrapper/PCIe.hwh` address map synchronized with the Linux driver when the block design changes.
 ## Linux DRM Driver
-Keep the documentation and validation scripts synchronized with the current bypass BAR map and rerun the DRM plus ILA validation flow after bitstream or driver changes.
+The immediate driver milestone is to prove the optional overlay plane with a direct KMS test. That test should bind a full-screen primary framebuffer plus a smaller overlay framebuffer and confirm `overlay=1` in the kernel logs and a nonzero `cpu_compositions` counter. After that, add the standard plane properties compositors usually expect, such as alpha and pixel blend mode, then test plane assignment with Weston before returning to GNOME/KDE behavior.
+
+Keep the documentation and validation scripts synchronized with the current bypass BAR map and rerun the DRM plus XDMA-ILA validation flow after bitstream or driver changes.

@@ -142,27 +142,31 @@ sudo insmod Linux_DRM_Driver/fpga_drm/fpga_drm.ko <diagnostic connector/fbdev ov
 
 Use these only to isolate userspace enumeration, fbdev, or upload-path issues.
 
-## ILA Video Validation
+## XDMA ILA Video Validation
 
 Capture `dmesg` around module load, first modeset, first upload, and unload.
-For hardware validation, capture the FPGA video-output ILA while forcing a KMS
-test pattern or desktop update.
+For hardware validation on the current bitstream, capture the XDMA AXI-stream
+ILA while forcing a KMS test pattern or desktop update. The older HDMI
+video-output ILA is not present in the current hardware.
 
-The matching probes file is
-`fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx`. The expected video ILA cell is
-`PCIe_i/hdmi_out/video_stream_ila/inst/ila_lib`. Trigger on `tuser` to confirm
-start-of-frame timing and on `tvalid` to confirm live stream data:
+The matching probes file is `fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx`. The
+current ILA cell is `PCIe_i/xdma_ila/inst/ila_lib`. Use the repo-local capture
+script and trigger on `tvalid` to confirm live stream data:
 
 ```sh
 /home/alpk/xilinx/Vivado/2023.2/bin/vivado -mode batch -nojournal -nolog -notrace \
-  -source /home/alpk/.codex/skills/ax7203-fpga-board-debug/scripts/capture_video_stream_ila.tcl \
-  -tclargs fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx tmp_ila_capture tuser
-
-/home/alpk/xilinx/Vivado/2023.2/bin/vivado -mode batch -nojournal -nolog -notrace \
-  -source /home/alpk/.codex/skills/ax7203-fpga-board-debug/scripts/capture_video_stream_ila.tcl \
-  -tclargs fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx tmp_ila_capture tvalid
+  -source scripts/capture_video_stream_ila.tcl \
+  -tclargs fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx tmp_ila_capture tvalid xdma
 ```
 
-Successful upload should show `tvalid && tready > 0`; after the SMPTE
-`modetest` pattern, the `tvalid` capture should show nonzero 24-bit pixel data
-and more than one unique `tdata` value.
+While the ILA is armed, generate a direct KMS upload:
+
+```sh
+modetest -M fpga_drm -s <connector>@<crtc>:1280x720-60 \
+  -P <primary>@<crtc>:1280x720+0+0@XR24 -F smpte
+```
+
+Successful upload should show `tvalid && tready > 0`, nonzero `tdata`, and more
+than one unique `tdata` value. The 2026-06-10 validation capture triggered on
+`net_slot_0_axis_tvalid` and showed 797 valid/ready handshakes in 1024 samples,
+with nonzero `net_slot_0_axis_tdata`.

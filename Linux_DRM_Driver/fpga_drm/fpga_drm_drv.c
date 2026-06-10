@@ -17,10 +17,14 @@
 #include <linux/workqueue.h>
 
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_state_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_connector.h>
+#include <drm/drm_crtc.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_encoder.h>
 #include <drm/drm_fbdev_generic.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
@@ -29,10 +33,10 @@
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drm_plane.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_rect.h>
-#include <drm/drm_simple_kms_helper.h>
 
 #include "libxdma_api.h"
 #include "libxdma.h"
@@ -213,10 +217,28 @@ module_param(configure_pipeline, bool, 0644);
 MODULE_PARM_DESC(configure_pipeline,
 		 "Configure FPGA video IPs through XDMA MMIO BAR during probe and modeset. Default is true.");
 
+static bool enable_overlay;
+module_param(enable_overlay, bool, 0644);
+MODULE_PARM_DESC(enable_overlay,
+		 "Expose one CPU-composited XRGB8888 overlay plane. Default is false.");
+
+static char *composition_backend = "cpu";
+module_param(composition_backend, charp, 0644);
+MODULE_PARM_DESC(composition_backend,
+		 "Composition backend: cpu. Value fpga is reserved for future hardware composition.");
+
 unsigned int h2c_timeout = 10;
 unsigned int c2h_timeout = 10;
 
 struct fpga_video_mode;
+
+struct fpga_plane_snapshot {
+	bool enabled;
+	struct drm_framebuffer *fb;
+	struct drm_rect src;
+	struct drm_rect dst;
+	struct iosys_map map;
+};
 
 struct fpga_drm_device {
 	struct drm_device drm;
@@ -230,7 +252,10 @@ struct fpga_drm_device {
 	int mmio_bar_idx;
 	const char *mmio_bar_name;
 
-	struct drm_simple_display_pipe pipe;
+	struct drm_crtc crtc;
+	struct drm_plane primary_plane;
+	struct drm_plane overlay_plane;
+	struct drm_encoder encoder;
 	struct drm_connector connector;
 
 	struct work_struct upload_work;
@@ -240,11 +265,10 @@ struct fpga_drm_device {
 	struct mutex dma_lock;
 	spinlock_t dma_state_lock;
 	wait_queue_head_t dma_idle_wq;
-	struct drm_framebuffer *upload_fb;
-	struct drm_rect upload_rect;
-	struct iosys_map upload_map;
 	bool pipe_enabled;
 	const struct fpga_video_mode *active_mode;
+	struct fpga_plane_snapshot primary;
+	struct fpga_plane_snapshot overlay;
 
 	struct sg_table frame_sgt;
 	struct sg_table active_frame_sgt;
@@ -258,6 +282,9 @@ struct fpga_drm_device {
 	u64 frames_queued;
 	u64 frames_uploaded;
 	u64 upload_failures;
+	u64 atomic_commits;
+	u64 atomic_rejects;
+	u64 cpu_compositions;
 };
 
 static struct fpga_drm_device *to_fpga(struct drm_device *drm)
@@ -1243,12 +1270,57 @@ static void fpga_drm_dma_complete_work(struct work_struct *work)
 	mutex_unlock(&fpga->dma_lock);
 }
 
-static int fpga_drm_copy_frame(struct fpga_drm_device *fpga,
-			       struct drm_framebuffer *fb,
-			       const struct iosys_map *map)
+static void fpga_drm_put_snapshot(struct fpga_plane_snapshot *snap)
+{
+	if (snap->fb)
+		drm_framebuffer_put(snap->fb);
+	memset(snap, 0, sizeof(*snap));
+	iosys_map_clear(&snap->map);
+}
+
+static void fpga_drm_replace_snapshot(struct fpga_plane_snapshot *snap,
+				      struct drm_plane_state *state)
+{
+	struct drm_shadow_plane_state *shadow_state;
+
+	fpga_drm_put_snapshot(snap);
+
+	if (!state || !state->fb || !state->crtc)
+		return;
+
+	shadow_state = to_drm_shadow_plane_state(state);
+
+	drm_framebuffer_get(state->fb);
+	snap->enabled = true;
+	snap->fb = state->fb;
+	snap->map = shadow_state->data[0];
+	snap->src.x1 = state->src_x >> 16;
+	snap->src.y1 = state->src_y >> 16;
+	snap->src.x2 = snap->src.x1 + (state->src_w >> 16);
+	snap->src.y2 = snap->src.y1 + (state->src_h >> 16);
+	snap->dst.x1 = state->crtc_x;
+	snap->dst.y1 = state->crtc_y;
+	snap->dst.x2 = state->crtc_x + state->crtc_w;
+	snap->dst.y2 = state->crtc_y + state->crtc_h;
+}
+
+static bool fpga_drm_get_snapshot(struct fpga_plane_snapshot *dst,
+				  const struct fpga_plane_snapshot *src)
+{
+	*dst = *src;
+	if (!dst->enabled || !dst->fb)
+		return false;
+
+	drm_framebuffer_get(dst->fb);
+	return true;
+}
+
+static int fpga_drm_copy_primary_frame(struct fpga_drm_device *fpga,
+				       const struct fpga_plane_snapshot *primary)
 {
 	const struct fpga_video_mode *mode = fpga->active_mode;
-	u8 *src = map->vaddr;
+	struct drm_framebuffer *fb = primary->fb;
+	u8 *src = primary->map.vaddr;
 	unsigned int y;
 
 	if (!src)
@@ -1257,7 +1329,8 @@ static int fpga_drm_copy_frame(struct fpga_drm_device *fpga,
 	if (!mode)
 		mode = fpga_drm_preferred_mode();
 
-	if (fb->format->format != DRM_FORMAT_XRGB8888 ||
+	if (!primary->enabled || !fb ||
+	    fb->format->format != DRM_FORMAT_XRGB8888 ||
 	    fb->width != mode->drm.hdisplay || fb->height != mode->drm.vdisplay)
 		return -EINVAL;
 
@@ -1267,6 +1340,70 @@ static int fpga_drm_copy_frame(struct fpga_drm_device *fpga,
 	for (y = 0; y < mode->drm.vdisplay; y++)
 		memcpy(fpga->line_bufs[y], src + y * fb->pitches[0],
 		       mode->line_bytes);
+
+	return 0;
+}
+
+static int fpga_drm_blend_overlay_cpu(struct fpga_drm_device *fpga,
+				      const struct fpga_plane_snapshot *overlay)
+{
+	struct drm_framebuffer *fb = overlay->fb;
+	const struct drm_rect *src = &overlay->src;
+	const struct drm_rect *dst = &overlay->dst;
+	u8 *base = overlay->map.vaddr;
+	unsigned int width = drm_rect_width(dst);
+	unsigned int height = drm_rect_height(dst);
+	unsigned int x, y;
+
+	if (!overlay->enabled)
+		return 0;
+
+	if (!base || !fb || fb->format->format != DRM_FORMAT_XRGB8888)
+		return -EINVAL;
+
+	if (src->x1 < 0 || src->y1 < 0 || dst->x1 < 0 || dst->y1 < 0)
+		return -EINVAL;
+
+	if (src->x2 > fb->width || src->y2 > fb->height ||
+	    dst->x2 > fpga->active_mode->drm.hdisplay ||
+	    dst->y2 > fpga->active_mode->drm.vdisplay)
+		return -EINVAL;
+
+	if (drm_rect_width(src) != width || drm_rect_height(src) != height)
+		return -EINVAL;
+
+	if (fb->pitches[0] < fb->width * FPGA_DRM_BPP)
+		return -EINVAL;
+
+	for (y = 0; y < height; y++) {
+		u8 *src_line = base + (src->y1 + y) * fb->pitches[0] +
+			       src->x1 * FPGA_DRM_BPP;
+		u8 *dst_line = fpga->line_bufs[dst->y1 + y] +
+			       dst->x1 * FPGA_DRM_BPP;
+
+		for (x = 0; x < width; x++)
+			((u32 *)dst_line)[x] = ((u32 *)src_line)[x];
+	}
+
+	return 0;
+}
+
+static int fpga_drm_compose_frame(struct fpga_drm_device *fpga,
+				  const struct fpga_plane_snapshot *primary,
+				  const struct fpga_plane_snapshot *overlay)
+{
+	int ret;
+
+	ret = fpga_drm_copy_primary_frame(fpga, primary);
+	if (ret)
+		return ret;
+
+	if (overlay && overlay->enabled) {
+		ret = fpga_drm_blend_overlay_cpu(fpga, overlay);
+		if (ret)
+			return ret;
+		fpga->cpu_compositions++;
+	}
 
 	return 0;
 }
@@ -1285,9 +1422,7 @@ static void fpga_drm_prepare_active_sgt(struct fpga_drm_device *fpga,
 	fpga->active_frame_sgt.nents = 0;
 }
 
-static int fpga_drm_submit_frame_nowait(struct fpga_drm_device *fpga,
-					struct drm_framebuffer *fb,
-					const struct iosys_map *map)
+static int fpga_drm_submit_frame_nowait(struct fpga_drm_device *fpga)
 {
 	const struct fpga_video_mode *mode = fpga->active_mode;
 	unsigned long flags;
@@ -1298,13 +1433,8 @@ static int fpga_drm_submit_frame_nowait(struct fpga_drm_device *fpga,
 
 	if (debug_logging)
 		drm_info(&fpga->drm,
-			 "upload frame mode=%s fb=%ux%u pitch=%u format=%p4cc\n",
-			 mode->name, fb->width, fb->height, fb->pitches[0],
-			 &fb->format->format);
-
-	ret = fpga_drm_copy_frame(fpga, fb, map);
-	if (ret)
-		return ret;
+			 "upload composed frame mode=%s overlay=%u\n",
+			 mode->name, fpga->overlay.enabled);
 
 	fpga_drm_prepare_active_sgt(fpga, mode);
 
@@ -1345,36 +1475,46 @@ static void fpga_drm_upload_work(struct work_struct *work)
 {
 	struct fpga_drm_device *fpga =
 		container_of(work, struct fpga_drm_device, upload_work);
-	struct drm_framebuffer *fb = NULL;
-	struct iosys_map map;
+	struct fpga_plane_snapshot primary;
+	struct fpga_plane_snapshot overlay;
+	bool have_primary;
+	bool have_overlay;
 	int ret;
 
+	memset(&primary, 0, sizeof(primary));
+	memset(&overlay, 0, sizeof(overlay));
+
 	mutex_lock(&fpga->upload_lock);
-	if (fpga->pipe_enabled && fpga->upload_fb) {
-		fb = fpga->upload_fb;
-		drm_framebuffer_get(fb);
-		map = fpga->upload_map;
-	}
+	have_primary = fpga->pipe_enabled &&
+		       fpga_drm_get_snapshot(&primary, &fpga->primary);
+	have_overlay = fpga_drm_get_snapshot(&overlay, &fpga->overlay);
 	mutex_unlock(&fpga->upload_lock);
 
-	if (!fb)
+	if (!have_primary)
 		return;
 
 	if (!upload_enabled) {
 		if (debug_logging)
 			drm_info(&fpga->drm, "upload skipped because upload_enabled=0\n");
-		drm_framebuffer_put(fb);
+		fpga_drm_put_snapshot(&primary);
+		if (have_overlay)
+			fpga_drm_put_snapshot(&overlay);
 		return;
 	}
 
 	mutex_lock(&fpga->dma_lock);
 	if (fpga_drm_dma_busy(fpga)) {
 		mutex_unlock(&fpga->dma_lock);
-		drm_framebuffer_put(fb);
+		fpga_drm_put_snapshot(&primary);
+		if (have_overlay)
+			fpga_drm_put_snapshot(&overlay);
 		return;
 	}
 
-	ret = fpga_drm_submit_frame_nowait(fpga, fb, &map);
+	ret = fpga_drm_compose_frame(fpga, &primary,
+				     have_overlay ? &overlay : NULL);
+	if (!ret)
+		ret = fpga_drm_submit_frame_nowait(fpga);
 	mutex_unlock(&fpga->dma_lock);
 
 	if (ret) {
@@ -1383,47 +1523,19 @@ static void fpga_drm_upload_work(struct work_struct *work)
 				    "async frame submit failed: %d\n", ret);
 	}
 
-	drm_framebuffer_put(fb);
+	fpga_drm_put_snapshot(&primary);
+	if (have_overlay)
+		fpga_drm_put_snapshot(&overlay);
 }
 
-static void fpga_drm_mark_dirty(struct fpga_drm_device *fpga,
-				struct drm_framebuffer *fb,
-				const struct iosys_map *map,
-				const struct drm_rect *dirty)
+static void fpga_drm_queue_commit_upload(struct fpga_drm_device *fpga)
 {
-	struct drm_framebuffer *old_fb = NULL;
-
-	mutex_lock(&fpga->upload_lock);
-	if (!fpga->pipe_enabled) {
-		mutex_unlock(&fpga->upload_lock);
-		return;
-	}
-
-	if (fpga->upload_fb != fb) {
-		old_fb = fpga->upload_fb;
-		drm_framebuffer_get(fb);
-		fpga->upload_fb = fb;
-		fpga->upload_map = *map;
-		fpga->upload_rect = *dirty;
-	} else if (!upload_full_frame) {
-		struct drm_rect *rect = &fpga->upload_rect;
-
-		rect->x1 = min(rect->x1, dirty->x1);
-		rect->y1 = min(rect->y1, dirty->y1);
-		rect->x2 = max(rect->x2, dirty->x2);
-		rect->y2 = max(rect->y2, dirty->y2);
-	}
-	mutex_unlock(&fpga->upload_lock);
-
-	if (old_fb)
-		drm_framebuffer_put(old_fb);
-
 	fpga->frames_queued++;
 	if (debug_logging)
 		drm_info(&fpga->drm,
-			 "queue upload count=%llu dirty=%d,%d-%d,%d full=%u enabled=%u\n",
-			 fpga->frames_queued, dirty->x1, dirty->y1, dirty->x2,
-			 dirty->y2, upload_full_frame, upload_enabled);
+			 "queue upload count=%llu full=%u enabled=%u overlay=%u\n",
+			 fpga->frames_queued, upload_full_frame, upload_enabled,
+			 fpga->overlay.enabled);
 
 	schedule_work(&fpga->upload_work);
 }
@@ -1442,9 +1554,10 @@ static void fpga_drm_stop_uploads(struct fpga_drm_device *fpga)
 	flush_work(&fpga->dma_complete_work);
 
 	mutex_lock(&fpga->upload_lock);
-	old_fb = fpga->upload_fb;
-	fpga->upload_fb = NULL;
-	iosys_map_clear(&fpga->upload_map);
+	old_fb = fpga->primary.fb;
+	memset(&fpga->primary, 0, sizeof(fpga->primary));
+	iosys_map_clear(&fpga->primary.map);
+	fpga_drm_put_snapshot(&fpga->overlay);
 	mutex_unlock(&fpga->upload_lock);
 
 	if (old_fb)
@@ -1452,8 +1565,8 @@ static void fpga_drm_stop_uploads(struct fpga_drm_device *fpga)
 }
 
 static enum drm_mode_status
-fpga_drm_mode_valid(struct drm_simple_display_pipe *pipe,
-		    const struct drm_display_mode *mode)
+fpga_drm_crtc_mode_valid(struct drm_crtc *crtc,
+			 const struct drm_display_mode *mode)
 {
 	if (mode->clock > FPGA_DRM_MAX_PIXEL_CLOCK_KHZ)
 		return MODE_CLOCK_HIGH;
@@ -1464,20 +1577,134 @@ fpga_drm_mode_valid(struct drm_simple_display_pipe *pipe,
 	return MODE_BAD;
 }
 
-static void fpga_drm_pipe_enable(struct drm_simple_display_pipe *pipe,
-				 struct drm_crtc_state *crtc_state,
-				 struct drm_plane_state *plane_state)
+static int fpga_drm_reject_atomic(struct fpga_drm_device *fpga, int ret)
 {
-	struct fpga_drm_device *fpga = to_fpga(pipe->crtc.dev);
-	struct drm_shadow_plane_state *shadow_state =
-		to_drm_shadow_plane_state(plane_state);
+	fpga->atomic_rejects++;
+	return ret;
+}
+
+static int fpga_drm_check_xrgb8888_fb(struct fpga_drm_device *fpga,
+				      const struct drm_plane_state *plane_state)
+{
+	if (!plane_state->fb)
+		return 0;
+
+	if (plane_state->fb->format->format != DRM_FORMAT_XRGB8888)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	if (plane_state->fb->pitches[0] <
+	    plane_state->fb->width * FPGA_DRM_BPP)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	return 0;
+}
+
+static int fpga_drm_primary_atomic_check(struct drm_plane *plane,
+					 struct drm_atomic_state *state)
+{
+	struct fpga_drm_device *fpga = to_fpga(plane->dev);
+	struct drm_plane_state *plane_state =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc_state *crtc_state;
+	const struct fpga_video_mode *mode;
+	int ret;
+
+	if (!plane_state || !plane_state->fb)
+		return 0;
+
+	if (!plane_state->crtc)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
+	if (!crtc_state)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	mode = fpga_drm_find_video_mode(&crtc_state->mode);
+	if (!mode) {
+		drm_dbg_kms(&fpga->drm, "primary rejected unknown mode %s\n",
+			    crtc_state->mode.name);
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+	}
+
+	ret = fpga_drm_check_xrgb8888_fb(fpga, plane_state);
+	if (ret)
+		return ret;
+
+	ret = drm_atomic_helper_check_plane_state(plane_state, crtc_state,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  false, false);
+	if (ret)
+		return fpga_drm_reject_atomic(fpga, ret);
+
+	if (plane_state->crtc_x || plane_state->crtc_y ||
+	    plane_state->crtc_w != mode->drm.hdisplay ||
+	    plane_state->crtc_h != mode->drm.vdisplay ||
+	    (plane_state->src_w >> 16) != mode->drm.hdisplay ||
+	    (plane_state->src_h >> 16) != mode->drm.vdisplay)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	return 0;
+}
+
+static int fpga_drm_overlay_atomic_check(struct drm_plane *plane,
+					 struct drm_atomic_state *state)
+{
+	struct fpga_drm_device *fpga = to_fpga(plane->dev);
+	struct drm_plane_state *plane_state =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc_state *crtc_state;
+	int ret;
+
+	if (!plane_state || !plane_state->fb)
+		return 0;
+
+	if (!enable_overlay)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	if (!plane_state->crtc)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
+	if (!crtc_state)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	ret = fpga_drm_check_xrgb8888_fb(fpga, plane_state);
+	if (ret)
+		return ret;
+
+	ret = drm_atomic_helper_check_plane_state(plane_state, crtc_state,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  true, false);
+	if (ret)
+		return fpga_drm_reject_atomic(fpga, ret);
+
+	if (plane_state->crtc_x < 0 || plane_state->crtc_y < 0 ||
+	    plane_state->crtc_w <= 0 || plane_state->crtc_h <= 0 ||
+	    plane_state->crtc_x + plane_state->crtc_w > crtc_state->mode.hdisplay ||
+	    plane_state->crtc_y + plane_state->crtc_h > crtc_state->mode.vdisplay)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	if ((plane_state->src_w >> 16) != plane_state->crtc_w ||
+	    (plane_state->src_h >> 16) != plane_state->crtc_h)
+		return fpga_drm_reject_atomic(fpga, -EINVAL);
+
+	return 0;
+}
+
+static void fpga_drm_crtc_atomic_enable(struct drm_crtc *crtc,
+					struct drm_atomic_state *state)
+{
+	struct fpga_drm_device *fpga = to_fpga(crtc->dev);
+	struct drm_crtc_state *crtc_state =
+		drm_atomic_get_new_crtc_state(state, crtc);
 	const struct fpga_video_mode *mode =
 		fpga_drm_find_video_mode(&crtc_state->mode);
-	struct drm_rect rect;
 	int ret;
 
 	if (!mode) {
-		drm_err(&fpga->drm, "pipe enable rejected unknown mode %s\n",
+		drm_err(&fpga->drm, "CRTC enable rejected unknown mode %s\n",
 			crtc_state->mode.name);
 		return;
 	}
@@ -1491,79 +1718,112 @@ static void fpga_drm_pipe_enable(struct drm_simple_display_pipe *pipe,
 		return;
 	}
 
-	rect.x1 = 0;
-	rect.y1 = 0;
-	rect.x2 = mode->drm.hdisplay;
-	rect.y2 = mode->drm.vdisplay;
-
 	mutex_lock(&fpga->upload_lock);
 	fpga->active_mode = mode;
 	fpga->pipe_enabled = true;
 	mutex_unlock(&fpga->upload_lock);
 
 	if (debug_logging)
-		drm_info(&fpga->drm, "pipe enable mode=%s fb=%p\n",
-			 mode->name, plane_state->fb);
-
-	fpga_drm_mark_dirty(fpga, plane_state->fb, &shadow_state->data[0], &rect);
+		drm_info(&fpga->drm, "CRTC enable mode=%s\n", mode->name);
 }
 
-static void fpga_drm_pipe_disable(struct drm_simple_display_pipe *pipe)
+static void fpga_drm_crtc_atomic_disable(struct drm_crtc *crtc,
+					 struct drm_atomic_state *state)
 {
-	struct fpga_drm_device *fpga = to_fpga(pipe->crtc.dev);
+	struct fpga_drm_device *fpga = to_fpga(crtc->dev);
 
 	mutex_lock(&fpga->upload_lock);
 	fpga->pipe_enabled = false;
 	mutex_unlock(&fpga->upload_lock);
 
 	if (debug_logging)
-		drm_info(&fpga->drm, "pipe disable\n");
+		drm_info(&fpga->drm, "CRTC disable\n");
 
 	fpga_drm_stop_uploads(fpga);
 }
 
-static void fpga_drm_pipe_update(struct drm_simple_display_pipe *pipe,
-				 struct drm_plane_state *old_state)
+static void fpga_drm_crtc_atomic_flush(struct drm_crtc *crtc,
+				       struct drm_atomic_state *state)
 {
-	struct drm_plane_state *state = pipe->plane.state;
-	struct drm_shadow_plane_state *shadow_state =
-		to_drm_shadow_plane_state(state);
-	struct fpga_drm_device *fpga = to_fpga(pipe->crtc.dev);
-	const struct fpga_video_mode *mode = fpga->active_mode;
-	struct drm_rect rect;
+	struct fpga_drm_device *fpga = to_fpga(crtc->dev);
+	struct drm_plane_state *primary_state;
+	struct drm_plane_state *overlay_state = NULL;
+	bool changed = false;
 
-	if (!state->fb)
-		return;
+	primary_state = drm_atomic_get_new_plane_state(state,
+						       &fpga->primary_plane);
+	if (enable_overlay)
+		overlay_state = drm_atomic_get_new_plane_state(state,
+							       &fpga->overlay_plane);
 
-	if (!mode)
-		mode = fpga_drm_preferred_mode();
-
-	if (upload_full_frame) {
-		rect.x1 = 0;
-		rect.y1 = 0;
-		rect.x2 = mode->drm.hdisplay;
-		rect.y2 = mode->drm.vdisplay;
-		if (debug_logging)
-			drm_info(&fpga->drm, "pipe update mode=%s full-frame\n",
-				 mode->name);
-		fpga_drm_mark_dirty(fpga, state->fb, &shadow_state->data[0], &rect);
-		return;
+	mutex_lock(&fpga->upload_lock);
+	if (primary_state) {
+		fpga_drm_replace_snapshot(&fpga->primary, primary_state);
+		changed = true;
 	}
-
-	if (drm_atomic_helper_damage_merged(old_state, state, &rect)) {
-		if (debug_logging)
-			drm_info(&fpga->drm, "pipe update damage=%d,%d-%d,%d\n",
-				 rect.x1, rect.y1, rect.x2, rect.y2);
-		fpga_drm_mark_dirty(fpga, state->fb, &shadow_state->data[0], &rect);
+	if (overlay_state) {
+		fpga_drm_replace_snapshot(&fpga->overlay, overlay_state);
+		changed = true;
 	}
+	mutex_unlock(&fpga->upload_lock);
+
+	fpga->atomic_commits++;
+
+	if (changed)
+		fpga_drm_queue_commit_upload(fpga);
 }
 
-static const struct drm_simple_display_pipe_funcs fpga_drm_pipe_funcs = {
-	.enable = fpga_drm_pipe_enable,
-	.disable = fpga_drm_pipe_disable,
-	.update = fpga_drm_pipe_update,
-	.mode_valid = fpga_drm_mode_valid,
-	DRM_GEM_SIMPLE_DISPLAY_PIPE_SHADOW_PLANE_FUNCS,
+static void fpga_drm_plane_atomic_update(struct drm_plane *plane,
+					 struct drm_atomic_state *state)
+{
+	/* The CRTC flush snapshots all planes and queues the composed upload. */
+}
+
+static void fpga_drm_plane_atomic_disable(struct drm_plane *plane,
+					  struct drm_atomic_state *state)
+{
+	/* Plane disable is handled by the CRTC flush snapshot path. */
+}
+
+static const struct drm_plane_helper_funcs fpga_drm_primary_helper_funcs = {
+	.atomic_check = fpga_drm_primary_atomic_check,
+	.atomic_update = fpga_drm_plane_atomic_update,
+	.atomic_disable = fpga_drm_plane_atomic_disable,
+	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
+};
+
+static const struct drm_plane_helper_funcs fpga_drm_overlay_helper_funcs = {
+	.atomic_check = fpga_drm_overlay_atomic_check,
+	.atomic_update = fpga_drm_plane_atomic_update,
+	.atomic_disable = fpga_drm_plane_atomic_disable,
+	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
+};
+
+static const struct drm_plane_funcs fpga_drm_plane_funcs = {
+	.update_plane = drm_atomic_helper_update_plane,
+	.disable_plane = drm_atomic_helper_disable_plane,
+	.destroy = drm_plane_cleanup,
+	DRM_GEM_SHADOW_PLANE_FUNCS,
+};
+
+static const struct drm_crtc_helper_funcs fpga_drm_crtc_helper_funcs = {
+	.mode_valid = fpga_drm_crtc_mode_valid,
+	.atomic_enable = fpga_drm_crtc_atomic_enable,
+	.atomic_disable = fpga_drm_crtc_atomic_disable,
+	.atomic_flush = fpga_drm_crtc_atomic_flush,
+};
+
+static const struct drm_crtc_funcs fpga_drm_crtc_funcs = {
+	.reset = drm_atomic_helper_crtc_reset,
+	.destroy = drm_crtc_cleanup,
+	.set_config = drm_atomic_helper_set_config,
+	.page_flip = drm_atomic_helper_page_flip,
+	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
+};
+
+static const struct drm_encoder_funcs fpga_drm_encoder_funcs = {
+	.destroy = drm_encoder_cleanup,
 };
 
 static const u32 fpga_drm_formats[] = {
@@ -1655,6 +1915,7 @@ static const struct drm_driver fpga_drm_driver = {
 static int fpga_drm_modeset_init(struct fpga_drm_device *fpga)
 {
 	struct drm_device *drm = &fpga->drm;
+	u32 crtc_mask;
 	int ret;
 
 	ret = drmm_mode_config_init(drm);
@@ -1668,6 +1929,57 @@ static int fpga_drm_modeset_init(struct fpga_drm_device *fpga)
 	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.quirk_addfb_prefer_host_byte_order = true;
 	drm->mode_config.funcs = &fpga_drm_mode_config_funcs;
+	drm->mode_config.normalize_zpos = enable_overlay;
+
+	ret = drm_universal_plane_init(drm, &fpga->primary_plane, 0,
+				       &fpga_drm_plane_funcs,
+				       fpga_drm_formats,
+				       ARRAY_SIZE(fpga_drm_formats),
+				       fpga_drm_modifiers,
+				       DRM_PLANE_TYPE_PRIMARY,
+				       "primary");
+	if (ret)
+		return ret;
+	drm_plane_helper_add(&fpga->primary_plane,
+			     &fpga_drm_primary_helper_funcs);
+
+	ret = drm_plane_create_zpos_immutable_property(&fpga->primary_plane, 0);
+	if (ret)
+		return ret;
+
+	ret = drm_crtc_init_with_planes(drm, &fpga->crtc,
+					&fpga->primary_plane, NULL,
+					&fpga_drm_crtc_funcs, "crtc-0");
+	if (ret)
+		return ret;
+	drm_crtc_helper_add(&fpga->crtc, &fpga_drm_crtc_helper_funcs);
+
+	crtc_mask = drm_crtc_mask(&fpga->crtc);
+	fpga->primary_plane.possible_crtcs = crtc_mask;
+
+	if (enable_overlay) {
+		ret = drm_universal_plane_init(drm, &fpga->overlay_plane,
+					       crtc_mask, &fpga_drm_plane_funcs,
+					       fpga_drm_formats,
+					       ARRAY_SIZE(fpga_drm_formats),
+					       fpga_drm_modifiers,
+					       DRM_PLANE_TYPE_OVERLAY,
+					       "cpu-overlay");
+		if (ret)
+			return ret;
+		drm_plane_helper_add(&fpga->overlay_plane,
+				     &fpga_drm_overlay_helper_funcs);
+		ret = drm_plane_create_zpos_immutable_property(&fpga->overlay_plane,
+							       1);
+		if (ret)
+			return ret;
+	}
+
+	ret = drm_encoder_init(drm, &fpga->encoder, &fpga_drm_encoder_funcs,
+			       DRM_MODE_ENCODER_VIRTUAL, "encoder-0");
+	if (ret)
+		return ret;
+	fpga->encoder.possible_crtcs = crtc_mask;
 
 	ret = drm_connector_init(drm, &fpga->connector, &fpga_drm_connector_funcs,
 				 DRM_MODE_CONNECTOR_VIRTUAL);
@@ -1686,12 +1998,7 @@ static int fpga_drm_modeset_init(struct fpga_drm_device *fpga)
 			return ret;
 	}
 
-	ret = drm_simple_display_pipe_init(drm, &fpga->pipe,
-					   &fpga_drm_pipe_funcs,
-					   fpga_drm_formats,
-					   ARRAY_SIZE(fpga_drm_formats),
-					   fpga_drm_modifiers,
-					   &fpga->connector);
+	ret = drm_connector_attach_encoder(&fpga->connector, &fpga->encoder);
 	if (ret)
 		return ret;
 
@@ -1796,6 +2103,13 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct drm_device *drm;
 	int ret;
 
+	if (strcmp(composition_backend, "cpu")) {
+		dev_err(&pdev->dev,
+			"unsupported composition_backend=%s, only cpu is implemented\n",
+			composition_backend);
+		return -EINVAL;
+	}
+
 	fpga = devm_drm_dev_alloc(&pdev->dev, &fpga_drm_driver,
 				  struct fpga_drm_device, drm);
 	if (IS_ERR(fpga))
@@ -1845,11 +2159,12 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		drm_fbdev_generic_setup(drm, 32);
 
 	drm_info(drm,
-		 "registered %zu-mode XRGB8888 stream display max=%ux%u pixel_clock<=%u kHz connected=%u non_desktop=%u fbdev=%u upload=%u debug=%u\n",
+		 "registered %zu-mode XRGB8888 stream display max=%ux%u pixel_clock<=%u kHz connected=%u non_desktop=%u fbdev=%u upload=%u debug=%u overlay=%u composition=%s\n",
 		 ARRAY_SIZE(fpga_video_modes), FPGA_DRM_MAX_WIDTH,
 		 FPGA_DRM_MAX_HEIGHT, FPGA_DRM_MAX_PIXEL_CLOCK_KHZ,
 		 connector_connected, connector_non_desktop, enable_fbdev,
-		 upload_enabled, debug_logging);
+		 upload_enabled, debug_logging, enable_overlay,
+		 composition_backend);
 
 	return 0;
 }
@@ -1866,6 +2181,11 @@ static void fpga_drm_remove(struct pci_dev *pdev)
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
 	fpga_drm_stop_uploads(fpga);
+	drm_info(drm,
+		 "stats: atomic_commits=%llu atomic_rejects=%llu frames_queued=%llu frames_uploaded=%llu upload_failures=%llu cpu_compositions=%llu\n",
+		 fpga->atomic_commits, fpga->atomic_rejects,
+		 fpga->frames_queued, fpga->frames_uploaded,
+		 fpga->upload_failures, fpga->cpu_compositions);
 }
 
 static void fpga_drm_shutdown(struct pci_dev *pdev)

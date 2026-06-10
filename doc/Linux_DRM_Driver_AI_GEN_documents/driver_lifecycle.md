@@ -48,11 +48,12 @@ sequenceDiagram
     participant WQ as upload_work
     participant XDMA as libxdma
     App->>Core: open /dev/dri/cardN and commit supported-mode fb
-    Core->>Driver: fpga_drm_pipe_enable/update
+    Core->>Driver: primary/overlay atomic check
+    Core->>Driver: fpga_drm_crtc_atomic_enable/flush
     Driver->>Driver: fpga_drm_program_mode on enable/modeset
-    Driver->>Driver: fpga_drm_mark_dirty
+    Driver->>Driver: snapshot primary and optional overlay planes
     Driver->>WQ: schedule upload_work
-    WQ->>Driver: fpga_drm_copy_frame
+    WQ->>Driver: fpga_drm_copy_frame and optional CPU overlay composition
     WQ->>XDMA: xdma_xfer_submit_lines_nowait
     XDMA-->>Driver: fpga_drm_xdma_done callback
     Driver->>WQ: dma_complete_work
