@@ -46,6 +46,6 @@ Hardware supports the driver whitelist up to `1920x1080@60` and the lower-clock 
 ## Hardware
 Keep the exported `fpga_hardware/PCIe_wrapper/PCIe.hwh` address map synchronized with the Linux driver when the block design changes.
 ## Linux DRM Driver
-The immediate driver milestone is to prove the optional overlay plane with a direct KMS test. That test should bind a full-screen primary framebuffer plus a smaller overlay framebuffer and confirm `overlay=1` in the kernel logs and a nonzero `cpu_compositions` counter. After that, add the standard plane properties compositors usually expect, such as alpha and pixel blend mode, then test plane assignment with Weston before returning to GNOME/KDE behavior.
+The direct KMS overlay test has proven that the optional overlay plane can be committed and CPU-composited into the XDMA upload path; kernel logs showed `overlay=1`. Current next steps are tracked in `doc/project_next_steps.md`: confirm unload-time `cpu_compositions`, improve atomic reject diagnostics, add compositor-friendly plane properties, and test plane assignment with Weston before returning to GNOME/KDE behavior.
 
 Keep the documentation and validation scripts synchronized with the current bypass BAR map and rerun the DRM plus XDMA-ILA validation flow after bitstream or driver changes.

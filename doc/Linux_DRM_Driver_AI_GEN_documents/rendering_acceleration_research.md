@@ -690,20 +690,24 @@ build a full GPU first. Add KMS-visible display-composition features:
 Compositors already understand those concepts. They may use them when the plane
 constraints fit a window, cursor, fullscreen surface, or video surface.
 
-From the 2026-06-10 checkpoint, the next concrete steps are:
+The direct KMS overlay test was implemented and validated after the 2026-06-10
+checkpoint. It committed primary plus overlay, and kernel logs showed
+`overlay=1`. The living current roadmap is now `doc/project_next_steps.md`.
+Keep that file updated after each completed milestone.
 
-1. Write a direct KMS overlay-plane test that commits primary plus overlay.
-2. Confirm the driver logs `overlay=1` and increments `cpu_compositions`.
-3. Add focused failure logging for overlay atomic-check rejects, including
+The next concrete items are:
+
+1. Confirm unload-time `cpu_compositions > 0` after an overlay run.
+2. Add focused failure logging for overlay atomic-check rejects, including
    format, scaling, bounds, CRTC, and framebuffer reasons.
-4. Add compositor-friendly standard plane properties, starting with immutable
+3. Add compositor-friendly standard plane properties, starting with immutable
    `rotation=0`, then global alpha and pixel blend mode if the CPU backend can
    implement the same semantics.
-5. Test with Weston DRM backend before GNOME/KDE, because Weston makes KMS
+4. Test with Weston DRM backend before GNOME/KDE, because Weston makes KMS
    plane assignment easier to observe and reason about.
-6. After CPU overlay is proven, choose the first FPGA-backed display operation:
-   hardware cursor or fixed-format overlay blend are the smallest useful
-   candidates.
+5. After CPU overlay behavior is stable, choose the first FPGA-backed display
+   operation: hardware cursor or fixed-format overlay blend are the smallest
+   useful candidates.
 
 If the goal is "an application can ask the FPGA to render something", build a
 private 2D command engine and a small userspace library. That is much more
