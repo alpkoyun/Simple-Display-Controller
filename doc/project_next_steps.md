@@ -6,7 +6,10 @@ change, or workflow decision.
 
 ## Current Status
 
-Last updated: 2026-06-12
+Last reviewed: 2026-06-17
+
+Canonical update location: use this file for project-level next steps and
+`Linux_DRM_Driver/tests/TEST_LOG.md` for exact test commands/results.
 
 The project has moved from scanout-only validation to a proven CPU-backed KMS
 overlay prototype:
