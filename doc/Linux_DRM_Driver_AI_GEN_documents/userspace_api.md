@@ -103,6 +103,14 @@ rectangles, and disabled-CRTC updates. The CPU backend copies the primary
 framebuffer into the existing line staging buffers, overwrites the overlay
 rectangle, and submits the composed frame through the same XDMA H2C upload path.
 
+The 2026-06-18 live validation used `kms_overlay_test` to commit primary plus
+overlay successfully and then unload the driver. The unload stats included
+`cpu_compositions=1`. Negative `TEST_ONLY` commits for scaling and
+out-of-bounds placement failed as expected and produced `atomic_rejects=2`.
+With `debug_logging=1`, the focused reject messages included
+`reason=helper-check ret=-34` for the scaling case and
+`reason=out-of-bounds ret=-22` for the bounds case.
+
 Because `libxdma.c` is linked into `fpga_drm.ko`, its module parameters are
 also present. The most relevant are `poll_mode`, `interrupt_mode`,
 `enable_st_c2h_credit`, and `desc_blen_max`. `h2c_timeout` and `c2h_timeout`

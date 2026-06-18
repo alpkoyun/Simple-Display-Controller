@@ -6,7 +6,7 @@ change, or workflow decision.
 
 ## Current Status
 
-Last reviewed: 2026-06-17
+Last reviewed: 2026-06-18
 
 Canonical update location: use this file for project-level next steps and
 `Linux_DRM_Driver/tests/TEST_LOG.md` for exact test commands/results.
@@ -21,6 +21,9 @@ overlay prototype:
 - A direct KMS atomic test has committed primary plus overlay successfully.
 - Kernel logs confirmed `overlay=1`, proving the CPU overlay path was used for
   at least one XDMA upload.
+- Unload stats confirmed `cpu_compositions=1` after a real overlay commit.
+- Negative atomic tests for scaling and out-of-bounds placement are rejected
+  and counted; focused reject logs were captured with `debug_logging=1`.
 - No render node exists and none is needed for the current KMS-plane milestone.
 - Desktop-manager pickup has been validated for primary-plane scanout, but
   desktop compositors have not yet been shown to assign surfaces to the overlay
@@ -55,8 +58,8 @@ After each step:
 | Done | Direct KMS overlay test-only commit | `atomic TEST_ONLY commit succeeded` in `TEST_LOG.md`. |
 | Done | Direct KMS real overlay commit | `atomic overlay commit succeeded` in `TEST_LOG.md`. |
 | Done | Confirm CPU overlay upload path | Kernel log showed `upload composed frame ... overlay=1`. |
-| Pending | Confirm unload-time `cpu_compositions` counter | Requires unloading `fpga_drm` after an overlay run and recording the stats line. |
-| Pending | Add focused atomic reject diagnostics | Needed before compositor experiments become confusing. |
+| Done | Confirm unload-time `cpu_compositions` counter | `TEST_LOG.md` records `cpu_compositions=1` after a real overlay commit. |
+| Done | Add focused atomic reject diagnostics | Live validation recorded scaling and out-of-bounds rejects plus `atomic_rejects=2`. |
 | Pending | Add compositor-friendly plane properties | Start with immutable `rotation=0`; consider alpha/blend only when semantics are implemented. |
 | Pending | Run Weston DRM-backend plane assignment test | Prefer Weston before GNOME/KDE for easier KMS plane reasoning. |
 | Pending | Run GNOME/KDE compositor behavior tests | Check whether mainstream compositors ever assign content to the overlay plane. |
@@ -66,7 +69,86 @@ After each step:
 
 ## Immediate Next Steps
 
-### 1. Capture unload-time composition stats
+### 1. Add immutable rotation property
+
+Why: compositors often inspect standard plane properties before deciding whether
+a plane is useful. The current overlay does not support rotation, so the honest
+standard property is immutable `rotation=0`.
+
+Acceptance:
+
+- `drm_info /dev/dri/card0` shows rotation support fixed to normal orientation
+- direct overlay test still passes
+- negative tests still produce focused reject diagnostics
+
+Suggested validation flow:
+
+```bash
+sudo systemctl stop display-manager
+sudo modprobe -r fpga_drm
+sudo modprobe fpga_drm debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=0
+sudo setfacl -m u:alpk:rw /dev/dri/card0
+drm_info /dev/dri/card0
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --scale-overlay
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --overlay-out-of-bounds
+sudo dmesg | grep -Ei 'atomic reject|helper-check|out-of-bounds|stats:'
+sudo modprobe -r fpga_drm
+sudo modprobe fpga_drm debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1
+sudo systemctl start display-manager
+```
+
+### 2. Decide alpha and pixel blend mode semantics
+
+Why: alpha and blend properties can make the overlay more compositor-friendly,
+but only if the CPU backend implements the same semantics.
+
+Decision needed:
+
+- keep overlay opaque only for now
+- or implement global alpha / premultiplied coverage in the CPU path
+
+Acceptance if implemented:
+
+- direct test can exercise opaque and alpha cases
+- driver rejects unsupported blend states clearly
+
+### 3. Weston DRM-backend experiment
+
+Why: Weston is easier to reason about than GNOME/KDE for KMS plane assignment.
+
+Goal:
+
+- run Weston directly on `fpga_drm`
+- inspect DRM logs and plane state
+- determine whether Weston assigns any surface to the overlay plane
+
+Acceptance:
+
+- document exact Weston command
+- record whether overlay plane `FB_ID` becomes nonzero
+- record whether kernel logs show `overlay=1`
+
+### 4. First FPGA-backed display operation
+
+Why: once the KMS contract is stable, the next improvement is replacing one CPU
+operation with hardware while keeping the same userspace API.
+
+Recommended candidates:
+
+- hardware cursor
+- fixed-format overlay blend
+
+Selection criteria:
+
+- smallest hardware block
+- easiest test vector
+- minimal new memory-sharing requirements
+- preserves the current KMS plane contract
+
+## Completed Recent Steps
+
+### 2026-06-18: Capture unload-time composition stats
 
 Why: the direct overlay run already proved `overlay=1`, but the unload stats
 line should also record a nonzero `cpu_compositions` counter.
@@ -90,9 +172,15 @@ overlay=1
 cpu_compositions > 0
 ```
 
-Record the exact output in `Linux_DRM_Driver/tests/TEST_LOG.md`.
+Result:
 
-### 2. Add focused overlay atomic-check logging
+```text
+stats: atomic_commits=8321 atomic_rejects=2 frames_queued=8320 frames_uploaded=8311 upload_failures=0 cpu_compositions=1
+```
+
+Evidence: `Linux_DRM_Driver/tests/TEST_LOG.md`.
+
+### 2026-06-18: Add focused overlay atomic-check logging
 
 Why: Weston/GNOME/KDE tests will be hard to interpret if the driver only
 returns a generic atomic failure.
@@ -120,64 +208,46 @@ Acceptance:
 - valid primary-plus-overlay commit still succeeds
 - `git diff --check` and module build pass
 
-### 3. Add immutable rotation property
+Implementation and validation status on 2026-06-18:
 
-Why: compositors often inspect standard plane properties before deciding whether
-a plane is useful. The current overlay does not support rotation, so the honest
-standard property is immutable `rotation=0`.
+- source diagnostics implemented
+- `kms_overlay_test` negative options implemented:
+  - `--scale-overlay`
+  - `--overlay-out-of-bounds`
+- `make -C Linux_DRM_Driver/fpga_drm` passed
+- `make -C Linux_DRM_Driver/tests` passed
+- the installed module now matches the repo-built module
+- live validation passed with `debug_logging=1 enable_overlay=1`
+- valid overlay `TEST_ONLY` commit passed
+- scaling negative test failed as expected with `ERANGE`
+- out-of-bounds negative test failed as expected with `EINVAL`
+- unload stats reported `atomic_rejects=2`
+- focused reject logs were captured with fbdev disabled to avoid debug log flood
 
-Acceptance:
+Latest checked srcversions were:
 
-- `drm_info /dev/dri/card0` shows rotation support fixed to normal orientation
-- direct overlay test still passes
+```text
+repo-built fpga_drm.ko: 9205FC3654816841CF7942C
+installed fpga_drm.ko:  9205FC3654816841CF7942C
+```
 
-### 4. Decide alpha and pixel blend mode semantics
+Validation reload sequence:
 
-Why: alpha and blend properties can make the overlay more compositor-friendly,
-but only if the CPU backend implements the same semantics.
+```bash
+sudo systemctl stop display-manager
+sudo modprobe -r fpga_drm
+sudo modprobe fpga_drm debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1
+sudo setfacl -m u:alpk:rw /dev/dri/card0
+```
 
-Decision needed:
+Validated commands:
 
-- keep overlay opaque only for now
-- or implement global alpha / premultiplied coverage in the CPU path
-
-Acceptance if implemented:
-
-- direct test can exercise opaque and alpha cases
-- driver rejects unsupported blend states clearly
-
-### 5. Weston DRM-backend experiment
-
-Why: Weston is easier to reason about than GNOME/KDE for KMS plane assignment.
-
-Goal:
-
-- run Weston directly on `fpga_drm`
-- inspect DRM logs and plane state
-- determine whether Weston assigns any surface to the overlay plane
-
-Acceptance:
-
-- document exact Weston command
-- record whether overlay plane `FB_ID` becomes nonzero
-- record whether kernel logs show `overlay=1`
-
-### 6. First FPGA-backed display operation
-
-Why: once the KMS contract is stable, the next improvement is replacing one CPU
-operation with hardware while keeping the same userspace API.
-
-Recommended candidates:
-
-- hardware cursor
-- fixed-format overlay blend
-
-Selection criteria:
-
-- smallest hardware block
-- easiest test vector
-- minimal new memory-sharing requirements
-- preserves the current KMS plane contract
+```bash
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --scale-overlay
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --overlay-out-of-bounds
+sudo -n dmesg | grep -Ei 'atomic reject|helper-check|scaling|out-of-bounds|overlay=1|cpu_compositions'
+```
 
 ## Longer-Term Tracks
 

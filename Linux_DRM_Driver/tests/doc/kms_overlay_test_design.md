@@ -261,6 +261,25 @@ Validated result:
 atomic TEST_ONLY commit succeeded
 ```
 
+Negative test-only variants:
+
+```bash
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --scale-overlay
+Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --overlay-out-of-bounds
+```
+
+`--scale-overlay` keeps the source rectangle at the requested size but doubles
+the CRTC destination size. The current driver does not support scaling, so this
+should be rejected by atomic validation.
+
+`--overlay-out-of-bounds` places the overlay rectangle partly outside the active
+mode. The current driver requires the full overlay destination rectangle to fit
+inside the CRTC bounds, so this should also be rejected by atomic validation.
+
+With focused reject diagnostics enabled in the driver, these failures should
+produce explicit kernel log reasons rather than only returning `EINVAL` to
+userspace.
+
 ## Real Commit
 
 The real commit omits `DRM_MODE_ATOMIC_TEST_ONLY`:

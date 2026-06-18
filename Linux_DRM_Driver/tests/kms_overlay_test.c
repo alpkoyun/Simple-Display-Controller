@@ -48,6 +48,8 @@ struct options {
 	uint32_t overlay_h;
 	unsigned int hold_seconds;
 	bool test_only;
+	bool scale_overlay;
+	bool overlay_out_of_bounds;
 };
 
 struct drm_resources {
@@ -109,6 +111,8 @@ static void usage(const char *argv0)
 		"Options:\n"
 		"  --device PATH             DRM card node (default: /dev/dri/card0)\n"
 		"  --overlay X,Y,W,H         Overlay rectangle (default: 80,60,320,180)\n"
+		"  --scale-overlay           Request overlay scaling; expected to fail\n"
+		"  --overlay-out-of-bounds   Place overlay partly outside CRTC; expected to fail\n"
 		"  --hold SECONDS            Hold real commit before cleanup (default: 5)\n"
 		"  --commit-test-only        Run atomic TEST_ONLY commit and exit\n"
 		"  --test-only               Alias for --commit-test-only\n"
@@ -177,6 +181,10 @@ static int parse_args(int argc, char **argv, struct options *opts)
 		} else if (!strcmp(argv[i], "--commit-test-only") ||
 			   !strcmp(argv[i], "--test-only")) {
 			opts->test_only = true;
+		} else if (!strcmp(argv[i], "--scale-overlay")) {
+			opts->scale_overlay = true;
+		} else if (!strcmp(argv[i], "--overlay-out-of-bounds")) {
+			opts->overlay_out_of_bounds = true;
 		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			usage(argv[0]);
 			exit(0);
@@ -812,8 +820,9 @@ static int build_commit_req(int fd, struct atomic_req *req,
 			    uint32_t primary_plane_id, uint32_t overlay_plane_id,
 			    uint32_t mode_blob_id, const struct dumb_fb *primary,
 			    const struct dumb_fb *overlay, int overlay_x,
-			    int overlay_y, uint32_t overlay_w,
-			    uint32_t overlay_h)
+			    int overlay_y, uint32_t overlay_src_w,
+			    uint32_t overlay_src_h, uint32_t overlay_crtc_w,
+			    uint32_t overlay_crtc_h)
 {
 	memset(req, 0, sizeof(*req));
 
@@ -856,17 +865,17 @@ static int build_commit_req(int fd, struct atomic_req *req,
 	    atomic_add_prop(fd, req, overlay_plane_id, DRM_MODE_OBJECT_PLANE,
 			    "SRC_Y", 0) ||
 	    atomic_add_prop(fd, req, overlay_plane_id, DRM_MODE_OBJECT_PLANE,
-			    "SRC_W", (uint64_t)overlay_w << 16) ||
+			    "SRC_W", (uint64_t)overlay_src_w << 16) ||
 	    atomic_add_prop(fd, req, overlay_plane_id, DRM_MODE_OBJECT_PLANE,
-			    "SRC_H", (uint64_t)overlay_h << 16) ||
+			    "SRC_H", (uint64_t)overlay_src_h << 16) ||
 	    atomic_add_prop(fd, req, overlay_plane_id, DRM_MODE_OBJECT_PLANE,
 			    "CRTC_X", (uint32_t)overlay_x) ||
 	    atomic_add_prop(fd, req, overlay_plane_id, DRM_MODE_OBJECT_PLANE,
 			    "CRTC_Y", (uint32_t)overlay_y) ||
 	    atomic_add_prop(fd, req, overlay_plane_id, DRM_MODE_OBJECT_PLANE,
-			    "CRTC_W", overlay_w) ||
+			    "CRTC_W", overlay_crtc_w) ||
 	    atomic_add_prop(fd, req, overlay_plane_id, DRM_MODE_OBJECT_PLANE,
-			    "CRTC_H", overlay_h))
+			    "CRTC_H", overlay_crtc_h))
 		return -1;
 
 	return 0;
@@ -921,6 +930,12 @@ int main(int argc, char **argv)
 	uint32_t mode_blob_id = 0;
 	uint32_t overlay_fb_w;
 	uint32_t overlay_fb_h;
+	uint32_t overlay_src_w;
+	uint32_t overlay_src_h;
+	uint32_t overlay_crtc_w;
+	uint32_t overlay_crtc_h;
+	int overlay_crtc_x;
+	int overlay_crtc_y;
 	int fd = -1;
 	int ret = 1;
 
@@ -945,28 +960,42 @@ int main(int argc, char **argv)
 	    find_planes(fd, crtc_index, &primary_plane_id, &overlay_plane_id))
 		goto out;
 
-	if (opts.overlay_x + opts.overlay_w > conn.mode.hdisplay ||
-	    opts.overlay_y + opts.overlay_h > conn.mode.vdisplay) {
+	overlay_src_w = opts.overlay_w;
+	overlay_src_h = opts.overlay_h;
+	overlay_crtc_w = opts.scale_overlay ? opts.overlay_w * 2 : opts.overlay_w;
+	overlay_crtc_h = opts.scale_overlay ? opts.overlay_h * 2 : opts.overlay_h;
+	overlay_crtc_x = opts.overlay_x;
+	overlay_crtc_y = opts.overlay_y;
+	if (opts.overlay_out_of_bounds) {
+		overlay_crtc_x = conn.mode.hdisplay - (int)(overlay_crtc_w / 2);
+		overlay_crtc_y = conn.mode.vdisplay - (int)(overlay_crtc_h / 2);
+	}
+
+	if (!opts.overlay_out_of_bounds &&
+	    (overlay_crtc_x + overlay_crtc_w > conn.mode.hdisplay ||
+	     overlay_crtc_y + overlay_crtc_h > conn.mode.vdisplay)) {
 		fprintf(stderr,
-			"overlay %d,%d %ux%u is outside mode %ux%u\n",
-			opts.overlay_x, opts.overlay_y, opts.overlay_w,
-			opts.overlay_h, conn.mode.hdisplay, conn.mode.vdisplay);
+			"overlay dst %d,%d %ux%u is outside mode %ux%u\n",
+			overlay_crtc_x, overlay_crtc_y, overlay_crtc_w,
+			overlay_crtc_h, conn.mode.hdisplay, conn.mode.vdisplay);
 		goto out;
 	}
 
 	printf("connector=%u crtc=%u primary=%u overlay=%u mode=%s %ux%u\n",
 	       conn.id, crtc_id, primary_plane_id, overlay_plane_id,
 	       conn.mode.name, conn.mode.hdisplay, conn.mode.vdisplay);
-	printf("overlay rectangle=%d,%d %ux%u\n",
-	       opts.overlay_x, opts.overlay_y, opts.overlay_w, opts.overlay_h);
+	printf("overlay src=%ux%u dst=%d,%d %ux%u scale=%u out_of_bounds=%u\n",
+	       overlay_src_w, overlay_src_h, overlay_crtc_x, overlay_crtc_y,
+	       overlay_crtc_w, overlay_crtc_h, opts.scale_overlay ? 1 : 0,
+	       opts.overlay_out_of_bounds ? 1 : 0);
 	printf("framebuffer limits min=%ux%u max=%ux%u\n",
 	       res.min_width, res.min_height, res.max_width, res.max_height);
 
-	overlay_fb_w = opts.overlay_w < res.min_width ? res.min_width : opts.overlay_w;
-	overlay_fb_h = opts.overlay_h < res.min_height ? res.min_height : opts.overlay_h;
-	if (overlay_fb_w != opts.overlay_w || overlay_fb_h != opts.overlay_h)
+	overlay_fb_w = overlay_src_w < res.min_width ? res.min_width : overlay_src_w;
+	overlay_fb_h = overlay_src_h < res.min_height ? res.min_height : overlay_src_h;
+	if (overlay_fb_w != overlay_src_w || overlay_fb_h != overlay_src_h)
 		printf("overlay backing framebuffer=%ux%u, displayed source=%ux%u\n",
-		       overlay_fb_w, overlay_fb_h, opts.overlay_w, opts.overlay_h);
+		       overlay_fb_w, overlay_fb_h, overlay_src_w, overlay_src_h);
 
 	if (create_dumb_fb(fd, conn.mode.hdisplay, conn.mode.vdisplay,
 			   fill_primary, &primary) ||
@@ -975,8 +1004,8 @@ int main(int argc, char **argv)
 	    create_mode_blob(fd, &conn.mode, &mode_blob_id) ||
 	    build_commit_req(fd, &req, conn.id, crtc_id, primary_plane_id,
 			     overlay_plane_id, mode_blob_id, &primary, &overlay,
-			     opts.overlay_x, opts.overlay_y, opts.overlay_w,
-			     opts.overlay_h))
+			     overlay_crtc_x, overlay_crtc_y, overlay_src_w,
+			     overlay_src_h, overlay_crtc_w, overlay_crtc_h))
 		goto out;
 
 	if (opts.test_only) {
