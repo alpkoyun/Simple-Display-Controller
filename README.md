@@ -16,7 +16,7 @@ In this Hardware Architecture, the XDMA IP acts as the master of the transfers. 
 ## Linux DRM Driver
 The current `fpga_drm.ko` driver is a whitelist-based DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes explicit KMS objects for one CRTC, one primary plane, one virtual encoder, and one virtual connector, advertises common 30 Hz and 60 Hz modes up to a `148.5 MHz` pixel clock, accepts linear `XRGB8888` framebuffers, and uploads complete frames through the XDMA H2C stream path. Userspace changes resolution with normal KMS modesets; the driver then reprograms the video clock wizard, VTC, and VDMA for the selected mode through the XDMA bypass BAR.
 
-An experimental overlay path is available with `enable_overlay=1`. It exposes one additional linear `XRGB8888` KMS overlay plane and composites it in CPU code into the existing XDMA upload staging buffers. The default remains `enable_overlay=0`; there is still no `DRIVER_RENDER`, render node, private render ioctl, or Mesa userspace driver.
+An experimental overlay path is available with `enable_overlay=1`. It exposes one additional linear `XRGB8888` KMS overlay plane and composites it in CPU code into the existing XDMA upload staging buffers. The overlay accepts same-size source/destination rectangles only: no scaling, no alpha/blend property, no rotation property yet, and the destination rectangle must fit inside the active CRTC mode. The default remains `enable_overlay=0`; there is still no `DRIVER_RENDER`, render node, private render ioctl, or Mesa userspace driver.
 
 Supported modes:
 
@@ -35,7 +35,7 @@ Supported modes:
 | `1920x1080@60` | `148.500 MHz` |
 | `1920x1080@30` | `74.250 MHz` |
 
-The current bring-up has been validated with `drm_info`, `modetest -M fpga_drm`, GDM/Xorg desktop pickup, and Vivado ILA capture. With the driver loaded using `debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1`, GDM picked up `/dev/dri/card0` and displayed the desktop through the FPGA output. A direct `modetest` SMPTE pattern upload also produced visible HDMI output. The video-output ILA has been removed from the current hardware, so live stream validation now uses the XDMA ILA at `PCIe_i/xdma_ila/inst/ila_lib`; a recent trigger on `net_slot_0_axis_tvalid` captured 797 `tvalid && tready` handshakes in 1024 samples with nonzero `net_slot_0_axis_tdata`.
+The current bring-up has been validated with `drm_info`, `modetest -M fpga_drm`, GDM/Xorg desktop pickup, direct atomic overlay tests, and Vivado ILA capture. With the driver loaded using `debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1`, GDM picked up `/dev/dri/card0` and displayed the desktop through the FPGA output. Direct `kms_overlay_test` validation proved that a normal atomic KMS client can commit primary plus overlay, that the CPU composition backend is exercised (`cpu_compositions=1` after unload), and that invalid scaling/out-of-bounds overlay states are rejected (`atomic_rejects=2`) with focused `debug_logging=1` messages. A direct `modetest` SMPTE pattern upload also produced visible HDMI output. The video-output ILA has been removed from the current hardware, so live stream validation now uses the XDMA ILA at `PCIe_i/xdma_ila/inst/ila_lib`; a recent trigger on `net_slot_0_axis_tvalid` captured 797 `tvalid && tready` handshakes in 1024 samples with nonzero `net_slot_0_axis_tdata`.
 The 30 Hz modes keep the same active resolution as their 60 Hz counterparts and lower the video pixel clock; they reduce display-stream bandwidth, but each full-frame PCIe upload still carries `active_width * active_height * 4` bytes.
 ![Demo Setup](doc/visuals/Demo.png)
 ## Hardware
@@ -46,6 +46,6 @@ Hardware supports the driver whitelist up to `1920x1080@60` and the lower-clock 
 ## Hardware
 Keep the exported `fpga_hardware/PCIe_wrapper/PCIe.hwh` address map synchronized with the Linux driver when the block design changes.
 ## Linux DRM Driver
-The direct KMS overlay test has proven that the optional overlay plane can be committed and CPU-composited into the XDMA upload path; kernel logs showed `overlay=1`. Current next steps are tracked in `doc/project_next_steps.md`: confirm unload-time `cpu_compositions`, improve atomic reject diagnostics, add compositor-friendly plane properties, and test plane assignment with Weston before returning to GNOME/KDE behavior.
+The direct KMS overlay milestone is complete: valid atomic overlay commits work, the unload stats show `cpu_compositions=1`, and negative atomic tests show `atomic_rejects=2` with focused reject reasons for scaling and out-of-bounds requests. Current next steps are tracked in `doc/project_next_steps.md`: add compositor-friendly plane properties starting with immutable `rotation=0`, decide alpha/blend semantics, and test plane assignment with Weston before returning to GNOME/KDE behavior.
 
 Keep the documentation and validation scripts synchronized with the current bypass BAR map and rerun the DRM plus XDMA-ILA validation flow after bitstream or driver changes.

@@ -1400,8 +1400,17 @@ static int fpga_drm_compose_frame(struct fpga_drm_device *fpga,
 
 	if (overlay && overlay->enabled) {
 		ret = fpga_drm_blend_overlay_cpu(fpga, overlay);
-		if (ret)
+		if (ret) {
+			if (debug_logging)
+				drm_info(&fpga->drm,
+					 "cpu overlay composition failed ret=%d fb=%u src=%dx%d-%dx%d dst=%dx%d-%dx%d\n",
+					 ret, overlay->fb ? overlay->fb->base.id : 0,
+					 overlay->src.x1, overlay->src.y1,
+					 overlay->src.x2, overlay->src.y2,
+					 overlay->dst.x1, overlay->dst.y1,
+					 overlay->dst.x2, overlay->dst.y2);
 			return ret;
+		}
 		fpga->cpu_compositions++;
 	}
 
@@ -1577,24 +1586,77 @@ fpga_drm_crtc_mode_valid(struct drm_crtc *crtc,
 	return MODE_BAD;
 }
 
-static int fpga_drm_reject_atomic(struct fpga_drm_device *fpga, int ret)
+static int
+fpga_drm_reject_atomic_state(struct fpga_drm_device *fpga,
+			     const char *stage,
+			     const struct drm_plane_state *plane_state,
+			     const struct drm_crtc_state *crtc_state,
+			     int ret, const char *reason)
 {
 	fpga->atomic_rejects++;
+
+	if (debug_logging && plane_state) {
+		struct drm_framebuffer *fb = plane_state->fb;
+		struct drm_plane *plane = plane_state->plane;
+		const char *mode_name = crtc_state ? crtc_state->mode.name : "<none>";
+
+		if (fb) {
+			u32 fmt = fb->format->format;
+
+			drm_info(&fpga->drm,
+				 "atomic reject stage=%s plane=%u type=%u reason=%s ret=%d fb=%u fmt=%p4cc modifier=0x%llx fb=%ux%u pitch=%u crtc=%u mode=%s src=%ux%u dst=%dx%d+%ux%u\n",
+				 stage, plane ? plane->base.id : 0,
+				 plane ? plane->type : 0, reason, ret,
+				 fb->base.id, &fmt, fb->modifier, fb->width,
+				 fb->height, fb->pitches[0],
+				 plane_state->crtc ? plane_state->crtc->base.id : 0,
+				 mode_name, plane_state->src_w >> 16,
+				 plane_state->src_h >> 16, plane_state->crtc_x,
+				 plane_state->crtc_y, plane_state->crtc_w,
+				 plane_state->crtc_h);
+		} else {
+			drm_info(&fpga->drm,
+				 "atomic reject stage=%s plane=%u type=%u reason=%s ret=%d no-fb crtc=%u mode=%s dst=%dx%d+%ux%u\n",
+				 stage, plane ? plane->base.id : 0,
+				 plane ? plane->type : 0, reason, ret,
+				 plane_state->crtc ? plane_state->crtc->base.id : 0,
+				 mode_name, plane_state->crtc_x,
+				 plane_state->crtc_y, plane_state->crtc_w,
+				 plane_state->crtc_h);
+		}
+	} else if (debug_logging) {
+		drm_info(&fpga->drm,
+			 "atomic reject stage=%s reason=%s ret=%d no-plane-state\n",
+			 stage, reason, ret);
+	}
+
 	return ret;
 }
 
 static int fpga_drm_check_xrgb8888_fb(struct fpga_drm_device *fpga,
-				      const struct drm_plane_state *plane_state)
+				      const struct drm_plane_state *plane_state,
+				      const struct drm_crtc_state *crtc_state,
+				      const char *stage)
 {
 	if (!plane_state->fb)
 		return 0;
 
 	if (plane_state->fb->format->format != DRM_FORMAT_XRGB8888)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, stage, plane_state,
+						    crtc_state, -EINVAL,
+						    "unsupported-format");
+
+	if (plane_state->fb->modifier != DRM_FORMAT_MOD_LINEAR &&
+	    plane_state->fb->modifier != DRM_FORMAT_MOD_INVALID)
+		return fpga_drm_reject_atomic_state(fpga, stage, plane_state,
+						    crtc_state, -EINVAL,
+						    "unsupported-modifier");
 
 	if (plane_state->fb->pitches[0] <
 	    plane_state->fb->width * FPGA_DRM_BPP)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, stage, plane_state,
+						    crtc_state, -EINVAL,
+						    "pitch-too-small");
 
 	return 0;
 }
@@ -1613,20 +1675,27 @@ static int fpga_drm_primary_atomic_check(struct drm_plane *plane,
 		return 0;
 
 	if (!plane_state->crtc)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "primary", plane_state,
+						    NULL, -EINVAL,
+						    "missing-crtc");
 
 	crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
 	if (!crtc_state)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "primary", plane_state,
+						    NULL, -EINVAL,
+						    "missing-crtc-state");
 
 	mode = fpga_drm_find_video_mode(&crtc_state->mode);
 	if (!mode) {
 		drm_dbg_kms(&fpga->drm, "primary rejected unknown mode %s\n",
 			    crtc_state->mode.name);
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "primary", plane_state,
+						    crtc_state, -EINVAL,
+						    "unknown-mode");
 	}
 
-	ret = fpga_drm_check_xrgb8888_fb(fpga, plane_state);
+	ret = fpga_drm_check_xrgb8888_fb(fpga, plane_state, crtc_state,
+					 "primary");
 	if (ret)
 		return ret;
 
@@ -1635,14 +1704,18 @@ static int fpga_drm_primary_atomic_check(struct drm_plane *plane,
 						  DRM_PLANE_NO_SCALING,
 						  false, false);
 	if (ret)
-		return fpga_drm_reject_atomic(fpga, ret);
+		return fpga_drm_reject_atomic_state(fpga, "primary", plane_state,
+						    crtc_state, ret,
+						    "helper-check");
 
 	if (plane_state->crtc_x || plane_state->crtc_y ||
 	    plane_state->crtc_w != mode->drm.hdisplay ||
 	    plane_state->crtc_h != mode->drm.vdisplay ||
 	    (plane_state->src_w >> 16) != mode->drm.hdisplay ||
 	    (plane_state->src_h >> 16) != mode->drm.vdisplay)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "primary", plane_state,
+						    crtc_state, -EINVAL,
+						    "not-fullscreen");
 
 	return 0;
 }
@@ -1660,16 +1733,23 @@ static int fpga_drm_overlay_atomic_check(struct drm_plane *plane,
 		return 0;
 
 	if (!enable_overlay)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "overlay", plane_state,
+						    NULL, -EINVAL,
+						    "overlay-disabled");
 
 	if (!plane_state->crtc)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "overlay", plane_state,
+						    NULL, -EINVAL,
+						    "missing-crtc");
 
 	crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
 	if (!crtc_state)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "overlay", plane_state,
+						    NULL, -EINVAL,
+						    "missing-crtc-state");
 
-	ret = fpga_drm_check_xrgb8888_fb(fpga, plane_state);
+	ret = fpga_drm_check_xrgb8888_fb(fpga, plane_state, crtc_state,
+					 "overlay");
 	if (ret)
 		return ret;
 
@@ -1678,17 +1758,23 @@ static int fpga_drm_overlay_atomic_check(struct drm_plane *plane,
 						  DRM_PLANE_NO_SCALING,
 						  true, false);
 	if (ret)
-		return fpga_drm_reject_atomic(fpga, ret);
+		return fpga_drm_reject_atomic_state(fpga, "overlay", plane_state,
+						    crtc_state, ret,
+						    "helper-check");
 
 	if (plane_state->crtc_x < 0 || plane_state->crtc_y < 0 ||
 	    plane_state->crtc_w <= 0 || plane_state->crtc_h <= 0 ||
 	    plane_state->crtc_x + plane_state->crtc_w > crtc_state->mode.hdisplay ||
 	    plane_state->crtc_y + plane_state->crtc_h > crtc_state->mode.vdisplay)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "overlay", plane_state,
+						    crtc_state, -EINVAL,
+						    "out-of-bounds");
 
 	if ((plane_state->src_w >> 16) != plane_state->crtc_w ||
 	    (plane_state->src_h >> 16) != plane_state->crtc_h)
-		return fpga_drm_reject_atomic(fpga, -EINVAL);
+		return fpga_drm_reject_atomic_state(fpga, "overlay", plane_state,
+						    crtc_state, -EINVAL,
+						    "scaling-unsupported");
 
 	return 0;
 }
@@ -1749,6 +1835,8 @@ static void fpga_drm_crtc_atomic_flush(struct drm_crtc *crtc,
 	struct drm_plane_state *primary_state;
 	struct drm_plane_state *overlay_state = NULL;
 	bool changed = false;
+	bool primary_enabled;
+	bool overlay_enabled;
 
 	primary_state = drm_atomic_get_new_plane_state(state,
 						       &fpga->primary_plane);
@@ -1765,9 +1853,17 @@ static void fpga_drm_crtc_atomic_flush(struct drm_crtc *crtc,
 		fpga_drm_replace_snapshot(&fpga->overlay, overlay_state);
 		changed = true;
 	}
+	primary_enabled = fpga->primary.enabled;
+	overlay_enabled = fpga->overlay.enabled;
 	mutex_unlock(&fpga->upload_lock);
 
 	fpga->atomic_commits++;
+
+	if (debug_logging)
+		drm_info(&fpga->drm,
+			 "atomic flush changed=%u primary_state=%u overlay_state=%u primary_enabled=%u overlay_enabled=%u commits=%llu\n",
+			 changed, primary_state ? 1 : 0, overlay_state ? 1 : 0,
+			 primary_enabled, overlay_enabled, fpga->atomic_commits);
 
 	if (changed)
 		fpga_drm_queue_commit_upload(fpga);

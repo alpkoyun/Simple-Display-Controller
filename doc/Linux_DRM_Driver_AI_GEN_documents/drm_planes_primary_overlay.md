@@ -165,6 +165,13 @@ the plane is intentionally limited. A compositor may still choose not to use it.
 The repository's direct test bypasses compositor policy and commits the overlay
 itself.
 
+Live validation on 2026-06-18 proved this contract against the installed
+module. A valid atomic `TEST_ONLY` primary-plus-overlay commit succeeded, a real
+overlay commit incremented unload-time `cpu_compositions` to `1`, and two
+negative test-only commits incremented `atomic_rejects` to `2`. The focused
+reject logs showed `reason=helper-check ret=-34` for the scaling request and
+`reason=out-of-bounds ret=-22` for the rectangle outside the active mode.
+
 ## What Happens on an Atomic Commit
 
 The driver uses the DRM atomic helpers for the public API. Its plane callbacks

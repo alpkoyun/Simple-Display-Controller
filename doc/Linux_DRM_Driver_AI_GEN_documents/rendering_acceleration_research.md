@@ -1,7 +1,7 @@
 # Rendering Acceleration Research
 
 Research date: 2026-06-05
-Updated validation checkpoint: 2026-06-10
+Updated validation checkpoint: 2026-06-18
 
 This note answers whether the FPGA display controller can gain a rendering
 operation that Linux will automatically use, and what would be required to make
@@ -72,6 +72,26 @@ Validated behavior on 2026-06-10:
   validation script was updated to use `PCIe_i/xdma_ila/inst/ila_lib`. A
   trigger on `net_slot_0_axis_tvalid` captured 797 valid/ready handshakes in
   1024 samples, with nonzero `net_slot_0_axis_tdata`.
+
+Validated behavior on 2026-06-18:
+
+- The repo-built and installed `fpga_drm.ko` matched with srcversion
+  `9205FC3654816841CF7942C`.
+- The driver was loaded with
+  `debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1`.
+- `modetest -M fpga_drm -c -p` showed the primary plane and one overlay plane,
+  both advertising `XR24` / linear modifier, with immutable z-order values
+  placing the overlay above the primary plane.
+- `Linux_DRM_Driver/tests/kms_overlay_test --commit-test-only` succeeded for a
+  primary-plus-overlay atomic state.
+- A real `kms_overlay_test --overlay 100,80,320,180 --hold 3` commit succeeded
+  and the unload stats reported `cpu_compositions=1`, proving that the CPU
+  composition backend was exercised.
+- Negative test-only commits for scaling and out-of-bounds placement failed as
+  expected. Unload stats reported `atomic_rejects=2`.
+- With `enable_fbdev=0` to avoid debug-log noise, the focused reject logs showed
+  `reason=helper-check ret=-34` for the scaling request and
+  `reason=out-of-bounds ret=-22` for the bounds violation.
 
 Relevant local source:
 
@@ -691,21 +711,20 @@ Compositors already understand those concepts. They may use them when the plane
 constraints fit a window, cursor, fullscreen surface, or video surface.
 
 The direct KMS overlay test was implemented and validated after the 2026-06-10
-checkpoint. It committed primary plus overlay, and kernel logs showed
-`overlay=1`. The living current roadmap is now `doc/project_next_steps.md`.
-Keep that file updated after each completed milestone.
+checkpoint. It committed primary plus overlay, kernel logs showed `overlay=1`,
+unload stats showed `cpu_compositions=1`, and invalid scaling/out-of-bounds
+states produced both `atomic_rejects=2` accounting and focused reject messages.
+The living current roadmap is now `doc/project_next_steps.md`. Keep that file
+updated after each completed milestone.
 
 The next concrete items are:
 
-1. Confirm unload-time `cpu_compositions > 0` after an overlay run.
-2. Add focused failure logging for overlay atomic-check rejects, including
-   format, scaling, bounds, CRTC, and framebuffer reasons.
-3. Add compositor-friendly standard plane properties, starting with immutable
+1. Add compositor-friendly standard plane properties, starting with immutable
    `rotation=0`, then global alpha and pixel blend mode if the CPU backend can
    implement the same semantics.
-4. Test with Weston DRM backend before GNOME/KDE, because Weston makes KMS
+2. Test with Weston DRM backend before GNOME/KDE, because Weston makes KMS
    plane assignment easier to observe and reason about.
-5. After CPU overlay behavior is stable, choose the first FPGA-backed display
+3. After CPU overlay behavior is stable, choose the first FPGA-backed display
    operation: hardware cursor or fixed-format overlay blend are the smallest
    useful candidates.
 
