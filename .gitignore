@@ -7,3 +7,57 @@ tmp_fpga_drm_probe
 tmp_ila_capture
 vivado_ip_docs
 *.o
+
+# Kernel-module build products.
+*.ko
+*.mod
+*.mod.c
+Module.symvers
+modules.order
+
+# Vivado/Vitis source-control policy:
+# keep the Linux-port recreate inputs and scripts, ignore generated projects,
+# runs, caches, hardware-manager state, logs, and build products.
+/vivado_project/*
+!/vivado_project/README.md
+
+!/vivado_project/export/
+!/vivado_project/export/PCIe.tcl
+
+!/vivado_project/scripts/
+!/vivado_project/scripts/**
+
+!/vivado_project/hls/
+!/vivado_project/hls/**
+/vivado_project/hls/vitis_hls.log
+/vivado_project/hls/*/solution1/
+/vivado_project/hls/*_2/
+
+!/vivado_project/IPs/
+/vivado_project/IPs/*
+!/vivado_project/IPs/IP_Packages/
+!/vivado_project/IPs/IP_Packages/**
+
+!/vivado_project/PCIe.srcs/
+/vivado_project/PCIe.srcs/**
+!/vivado_project/PCIe.srcs/constrs_1/
+!/vivado_project/PCIe.srcs/constrs_1/new/
+!/vivado_project/PCIe.srcs/constrs_1/new/PCIe.xdc
+!/vivado_project/PCIe.srcs/sources_1/
+!/vivado_project/PCIe.srcs/sources_1/bd/
+!/vivado_project/PCIe.srcs/sources_1/bd/PCIe/
+!/vivado_project/PCIe.srcs/sources_1/bd/PCIe/hdl/
+!/vivado_project/PCIe.srcs/sources_1/bd/PCIe/hdl/PCIe_wrapper.v
+!/vivado_project/PCIe.srcs/sources_1/bd/PCIe/ip/
+!/vivado_project/PCIe.srcs/sources_1/bd/PCIe/ip/PCIe_mig_7series_0_0/
+!/vivado_project/PCIe.srcs/sources_1/bd/PCIe/ip/PCIe_mig_7series_0_0/mig_a.prj
+!/vivado_project/PCIe.srcs/sources_1/bd/PCIe/ip/PCIe_mig_7series_0_0/mig_b.prj
+!/vivado_project/PCIe.srcs/sources_1/new/
+!/vivado_project/PCIe.srcs/sources_1/new/*.v
+!/vivado_project/PCIe.srcs/sources_1/new/*.xdc
+!/vivado_project/PCIe.srcs/sources_1/new/i2c_master/
+!/vivado_project/PCIe.srcs/sources_1/new/i2c_master/i2c_config.v
+!/vivado_project/PCIe.srcs/utils_1/
+!/vivado_project/PCIe.srcs/utils_1/imports/
+!/vivado_project/PCIe.srcs/utils_1/imports/synth_1/
+!/vivado_project/PCIe.srcs/utils_1/imports/synth_1/Pcie_ddr3.dcp
