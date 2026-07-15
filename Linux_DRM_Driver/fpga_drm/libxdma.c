@@ -25,6 +25,7 @@
 #include <linux/mm.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
+#include <linux/sizes.h>
 #include <linux/vmalloc.h>
 
 #include "libxdma.h"
@@ -53,6 +54,14 @@ MODULE_PARM_DESC(desc_blen_max,
 		 "per descriptor max. buffer length, default is (1 << 28) - 1");
 
 #define XDMA_PERF_NUM_DESC 128
+
+/*
+ * fpga_drm only needs the low XDMA/config and video-register windows from
+ * ordinary BAR mappings.  The GOP-capable hardware exposes a larger bypass
+ * resource, so map a bounded prefix here and map individual DDR ranges
+ * explicitly in fpga_drm_drv.c when the opt-in diagnostic needs them.
+ */
+#define XDMA_FPGA_DRM_BAR_MAP_MAX SZ_1M
 
 /* Kernel version adaptative code */
 #if HAS_SWAKE_UP_ONE
@@ -1543,6 +1552,7 @@ static void unmap_bars(struct xdma_dev *xdev, struct pci_dev *dev)
 			/* mark as unmapped */
 			xdev->bar[i] = NULL;
 		}
+		xdev->bar_map_len[i] = 0;
 	}
 }
 
@@ -1557,6 +1567,7 @@ static int map_single_bar(struct xdma_dev *xdev, struct pci_dev *dev, int idx)
 	map_len = bar_len;
 
 	xdev->bar[idx] = NULL;
+	xdev->bar_map_len[idx] = 0;
 
 	/* do not map BARs with length 0. Note that start MAY be 0! */
 	if (!bar_len) {
@@ -1564,11 +1575,11 @@ static int map_single_bar(struct xdma_dev *xdev, struct pci_dev *dev, int idx)
 		return 0;
 	}
 
-	/* BAR size exceeds maximum desired mapping? */
-	if (bar_len > INT_MAX) {
-		pr_info("Limit BAR %d mapping from %llu to %d bytes\n", idx,
-			(u64)bar_len, INT_MAX);
-		map_len = (resource_size_t)INT_MAX;
+	/* Keep large framebuffer-capable BARs out of the permanent mapping. */
+	if (bar_len > XDMA_FPGA_DRM_BAR_MAP_MAX) {
+		pr_info("Limit BAR %d mapping from %llu to %llu bytes\n", idx,
+			(u64)bar_len, (u64)XDMA_FPGA_DRM_BAR_MAP_MAX);
+		map_len = XDMA_FPGA_DRM_BAR_MAP_MAX;
 	}
 	/*
 	 * map the full device memory or IO region into kernel virtual
@@ -1581,6 +1592,7 @@ static int map_single_bar(struct xdma_dev *xdev, struct pci_dev *dev, int idx)
 		pr_info("Could not map BAR %d.\n", idx);
 		return -1;
 	}
+	xdev->bar_map_len[idx] = map_len;
 
 	pr_info("BAR%d at 0x%llx mapped at 0x%p, length=%llu(/%llu)\n", idx,
 		(u64)bar_start, xdev->bar[idx], (u64)map_len, (u64)bar_len);
@@ -4890,6 +4902,29 @@ int xdma_device_user_bar_info(void *dev_hndl, int *bar_idx,
 	return 0;
 }
 
+int xdma_device_user_bar_mapping_info(void *dev_hndl, int *bar_idx,
+				      resource_size_t *resource_len,
+				      resource_size_t *mapped_len)
+{
+	struct xdma_dev *xdev = dev_hndl;
+	int idx;
+
+	if (!xdev || xdev->user_bar_idx < 0 ||
+	    xdev->user_bar_idx >= XDMA_BAR_NUM ||
+	    !xdev->bar[xdev->user_bar_idx])
+		return -ENODEV;
+
+	idx = xdev->user_bar_idx;
+	if (bar_idx)
+		*bar_idx = idx;
+	if (resource_len)
+		*resource_len = pci_resource_len(xdev->pdev, idx);
+	if (mapped_len)
+		*mapped_len = xdev->bar_map_len[idx];
+
+	return 0;
+}
+
 void __iomem *xdma_device_bypass_bar(void *dev_hndl)
 {
 	struct xdma_dev *xdev = dev_hndl;
@@ -4915,6 +4950,29 @@ int xdma_device_bypass_bar_info(void *dev_hndl, int *bar_idx,
 		*bar_idx = xdev->bypass_bar_idx;
 	if (bar_len)
 		*bar_len = pci_resource_len(xdev->pdev, xdev->bypass_bar_idx);
+
+	return 0;
+}
+
+int xdma_device_bypass_bar_mapping_info(void *dev_hndl, int *bar_idx,
+					resource_size_t *resource_len,
+					resource_size_t *mapped_len)
+{
+	struct xdma_dev *xdev = dev_hndl;
+	int idx;
+
+	if (!xdev || xdev->bypass_bar_idx < 0 ||
+	    xdev->bypass_bar_idx >= XDMA_BAR_NUM ||
+	    !xdev->bar[xdev->bypass_bar_idx])
+		return -ENODEV;
+
+	idx = xdev->bypass_bar_idx;
+	if (bar_idx)
+		*bar_idx = idx;
+	if (resource_len)
+		*resource_len = pci_resource_len(xdev->pdev, idx);
+	if (mapped_len)
+		*mapped_len = xdev->bar_map_len[idx];
 
 	return 0;
 }

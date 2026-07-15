@@ -3,7 +3,15 @@
 ## Build
 
 ```sh
+scripts/check_fpga_hardware_contract.py
 make -C Linux_DRM_Driver/fpga_drm
+```
+
+The default checker validates the working H2C/VDMA display contract. Before a
+GOP or direct-DDR test, the stronger gate must also pass:
+
+```sh
+scripts/check_fpga_hardware_contract.py --require-ddr-bypass
 ```
 
 The output module is `Linux_DRM_Driver/fpga_drm/fpga_drm.ko`.
@@ -34,25 +42,73 @@ configure_pipeline=1
 On load, `dmesg` should show the XDMA MMIO BAR index/length, the
 AXI-Lite register ranges from `PCIe.hwh`, and the DDR frame ring used by VDMA.
 The current hardware exposes the video AXI-Lite aperture through the XDMA
-bypass BAR. Expected register ranges are:
+bypass BAR. The bridge translates host BAR offset zero to AXI `0x3f000000`.
+Expected ranges are:
 
 ```text
-color_convert      0x00000000-0x0000ffff
-pixel_unpack       0x00010000-0x0001ffff
-axi_iic            0x00020000-0x0002ffff
-axi_vdma_0         0x00040000-0x0004ffff
-hdmi_out_v_tc_0    0x00050000-0x0005ffff
-video_clk_wiz      0x00060000-0x0006ffff
-video_lock_gpio    0x00070000-0x0007ffff
+Resource            AXI range                   Host BAR offset
+pixel_unpack        0x3f000000-0x3f00ffff       0x00000000-0x0000ffff
+hdmi_out_v_tc_0     0x3f010000-0x3f01ffff       0x00010000-0x0001ffff
+axi_iic             0x3f020000-0x3f02ffff       0x00020000-0x0002ffff
+axi_uartlite        0x3f030000-0x3f03ffff       0x00030000-0x0003ffff
+axi_vdma_0          0x3f040000-0x3f04ffff       0x00040000-0x0004ffff
+color_convert       0x3f050000-0x3f05ffff       0x00050000-0x0005ffff
+video_clk_wiz       0x3f060000-0x3f06ffff       0x00060000-0x0006ffff
+video_lock_gpio     0x3f070000-0x3f07ffff       0x00070000-0x0007ffff
+DDR bypass slice    0x3f800000-0x3fffffff       0x00800000-0x00ffffff
 ```
 
 During probe the driver validates the BAR ranges, configures static video IP
 state such as pixel unpack, color conversion, HDMI I2C, and video-lock GPIO,
 then registers the DRM device. VDMA, VTC, and the video clock wizard are
-programmed during KMS enable/modeset for the selected mode. The VDMA frame
-addresses remain DDR addresses, currently starting at `0x81000000`; they are
-not bypass BAR offsets. Frame spacing is sized for the largest supported mode
-so frame buffers do not overlap after mode switches.
+programmed during KMS enable/modeset for the selected mode. The VDMA masters
+retain their separate 1 GiB DDR range, `0x40000000-0x7fffffff`. Normal operation
+keeps four frames at `0x41000000-0x42fa6fff`; the 8 MiB bypass-visible DDR
+slice does not reduce that ring.
+
+The updated July 15 export deliberately uses only the non-aliased lower half
+of the 32 MiB BAR. With translation `0x3f000000`, host offsets
+`0x00000000-0x00ffffff` are representable; offsets
+`0x01000000-0x01ffffff` alias and remain unused. The control IPs occupy the
+low offsets and the 8 MiB MIG segment occupies `0x00800000-0x00ffffff`.
+
+## Direct DDR Bypass Diagnostic
+
+Run this only with an export that passes
+`scripts/check_fpga_hardware_contract.py --require-ddr-bypass`. The endpoint
+must enumerate with the intended BAR, and every used address must be
+representable by XDMA's translation/base composition.
+
+```sh
+sudo -n modprobe -r fpga_drm
+sudo -n modprobe -r xdma
+sudo -n modprobe fpga_drm debug_logging=1 upload_enabled=0 configure_pipeline=1 ddr_bypass_test=1
+sudo -n dmesg | grep -Ei 'fpga_drm|BAR|hardware contract|DDR bypass|VDMA'
+```
+
+Success requires a `DDR bypass scratch test passed` line for bypass AXI
+`0x3ffff000` at BAR offset `0x00fff000`, a test-pattern line after the first
+modeset, clean VDMA/VTC/clock readbacks, and the color-bar pattern on the
+monitor. In this diagnostic, the CPU writes the frame through bypass AXI
+`0x3f800000`, while VDMA scans the same MIG offset through its independent
+master address `0x40000000`.
+Reloading without `ddr_bypass_test=1` restores the normal four-frame ring. The
+driver deliberately rejects
+`ddr_bypass_test=1` unless H2C uploads are disabled, preventing the stream path
+from overwriting the diagnostic frame.
+
+The first 2026-07-15 export failed safely before modeset:
+
+```text
+DDR bypass scratch mismatch word=0 expected=0x55aa00ff got=0x00000044
+probe of 0000:01:00.0 failed with error -5
+```
+
+ILA subsequently proved that the old host offset `0x01fff000` aliased to
+unmapped AXI `0x3ffff000`. The updated 8 MiB export now assigns that AXI range
+to MIG and passes the stronger static checker. Its rebuilt live diagnostic
+must still pass scratch readback and full-frame scanout before GOP software
+work begins.
 
 The FPGA should appear as a DRM card with these connector modes:
 

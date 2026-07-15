@@ -23,7 +23,7 @@ The expected hardware contract is:
 | Resource | Acquired by | Notes |
 |---|---|---|
 | PCI function | `fpga_drm_pci_driver` | Binds Xilinx XDMA PCI IDs. Only one PCI driver can own the function. |
-| BAR mappings | `libxdma.c:map_bars()` | XDMA maps the config/user/bypass BARs; `fpga_drm_drv.c` uses the bypass BAR for AXI-Lite video-IP registers in this hardware. |
+| BAR mappings | `libxdma.c:map_bars()` | The embedded XDMA layer maps at most the low 1 MiB prefix of each BAR. `fpga_drm_drv.c` uses the bypass prefix for video registers and maps bounded DDR ranges only for the opt-in diagnostic. |
 | DMA mask | `libxdma.c:set_dma_mask()` | Tries 64-bit DMA and falls back as needed. |
 | H2C engines | `libxdma.c:probe_engines()` | `fpga_drm` uses the configured `h2c_channel`, default 0. |
 | IRQ vectors | `libxdma.c:irq_setup()` | MSI-X, MSI, or legacy IRQ depending on platform and `interrupt_mode`. |
@@ -75,23 +75,43 @@ only for other designs that expose the AXI-Lite aperture there.
 | Interrupt registers | MSI-X/MSI/legacy channel and user interrupt control. |
 | XDMA bypass BAR AXI-Lite window | Host writes to the FPGA video IP address map. |
 
-The bypass BAR AXI address map is:
+The current XDMA bypass configuration uses `0x3f000000` as its AXI translation
+base. Low BAR offsets reach the control IPs as intended:
 
-| IP | AXI address |
-|---|---:|
-| Color convert | `0x00000000` |
-| Pixel unpack | `0x00010000` |
-| AXI IIC | `0x00020000` |
-| AXI VDMA | `0x00040000` |
-| VTC | `0x00050000` |
-| Video clock wizard | `0x00060000` |
-| Video lock GPIO | `0x00070000` |
-| DDR aperture in bypass map | `0x00080000` |
+| Resource | AXI address | Host BAR offset |
+|---|---:|---:|
+| Pixel unpack | `0x3f000000-0x3f00ffff` | `0x00000000-0x0000ffff` |
+| VTC | `0x3f010000-0x3f01ffff` | `0x00010000-0x0001ffff` |
+| AXI IIC | `0x3f020000-0x3f02ffff` | `0x00020000-0x0002ffff` |
+| AXI UART Lite | `0x3f030000-0x3f03ffff` | `0x00030000-0x0003ffff` |
+| AXI VDMA | `0x3f040000-0x3f04ffff` | `0x00040000-0x0004ffff` |
+| Color convert | `0x3f050000-0x3f05ffff` | `0x00050000-0x0005ffff` |
+| Video clock wizard | `0x3f060000-0x3f06ffff` | `0x00060000-0x0006ffff` |
+| Video lock GPIO | `0x3f070000-0x3f07ffff` | `0x00070000-0x0007ffff` |
+| DDR bypass slice | `0x3f800000-0x3fffffff` | `0x00800000-0x00ffffff` |
 
-VDMA configuration uses AXI VDMA offsets relative to `0x00040000`. It does
-not use XDMA engine/config offsets for VDMA control. The frame addresses
-programmed into VDMA are still DDR addresses, currently starting at
-`0x81000000`; those are not host MMIO offsets.
+The updated DDR row uses the non-aliased lower half of the BAR. ILA evidence
+from the previous export showed that XDMA combines its translation bits with
+the host offset rather than performing unrestricted arithmetic addition. With
+translation `0x3f000000`, offsets through `0x00ffffff` reproduce their intended
+AXI addresses. The BAR's upper half, `0x01000000-0x01ffffff`, aliases and is
+intentionally unused.
+
+The VDMA masters do not pass through this PCIe translation. Their independent
+1 GiB DDR address range remains `0x40000000-0x7fffffff`. Normal operation still
+programs four maximum-sized frame stores at `0x41000000-0x42fa6fff`; shrinking
+the bypass-visible slice does not reduce that ring.
+
+With `ddr_bypass_test=1 upload_enabled=0`, the driver temporarily programs
+VDMA with one frame, performs a bounded write/read/restore check, and writes a
+color-bar frame. The bypass master writes MIG offset zero at AXI `0x3f800000`;
+VDMA reaches the same offset at its own master address `0x40000000`. This
+diagnostic is off by default; normal Linux updates retain the four-frame ring
+and use XDMA H2C streaming.
+
+The generated export and live readback remain the authority. A future
+dedicated framebuffer BAR may provide a cleaner firmware contract, but equal
+numeric AXI addresses across the bypass and VDMA masters are not required.
 
 ## Not in Scope
 

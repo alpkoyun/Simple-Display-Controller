@@ -597,6 +597,7 @@ struct xdma_dev {
 
 	/* PCIe BAR management */
 	void __iomem *bar[XDMA_BAR_NUM];	/* addresses for mapped BARs */
+	resource_size_t bar_map_len[XDMA_BAR_NUM]; /* mapped prefix lengths */
 	int user_bar_idx;	/* BAR index of user logic */
 	int config_bar_idx;	/* BAR index of XDMA config logic */
 	int bypass_bar_idx;	/* BAR index of XDMA bypass logic */

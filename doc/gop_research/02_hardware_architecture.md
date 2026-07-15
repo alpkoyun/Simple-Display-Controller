@@ -9,39 +9,50 @@ host XRGB8888 -> XDMA H2C stream -> VDMA S2MM -> DDR frame ring
 DDR -> VDMA MM2S -> pixel_unpack -> color_convert -> video out/VTC -> HDMI
 ```
 
-The host can program video registers through the 2 MiB XDMA bypass BAR, but it
-cannot issue ordinary PCI memory writes into the DDR frame store. The current
-PCI function also has no Expansion ROM. Those are the two hardware contracts
-GOP deployment needs.
+The host can program video registers through the current 32 MiB XDMA bypass
+BAR. The updated export maps an 8 MiB MIG segment into the BAR's non-aliased
+lower half. The strict static contract, live scratch save/write/read/restore,
+AXI ILA responses, and a `1280x720` bypass-frame scanout now pass. The current
+PCI function still has no Expansion ROM. See the
+[development record](../development_work/pcie_ddr_bypass_gop_prerequisite/README.md)
+for the complete evidence and remaining maximum-resolution test.
 
 ## Target PCI resources
 
 | Resource | Proposed purpose | Initial sizing |
 |---|---|---:|
 | Existing XDMA control BAR | Keep Linux XDMA engine access | Existing 64 KiB |
-| Register BAR/window | VDMA, VTC, clock, I2C, pixel-IP, and status MMIO | Existing 2 MiB is sufficient |
-| Framebuffer BAR/window | Direct PCIe writes into one DDR scanout frame | 16 MiB |
+| Register BAR/window | VDMA, VTC, clock, I2C, pixel-IP, and status MMIO | Less than 1 MiB is currently used |
+| Framebuffer BAR/window | Direct PCIe writes into one DDR scanout frame | 8 MiB |
 | Expansion ROM BAR | Read-only UEFI Option ROM | Size after measuring the packaged ROM; likely 128-512 KiB |
 
-A 1920x1080 32-bit framebuffer needs 8,294,400 bytes, so a 16 MiB aperture
-holds one maximum-size frame with alignment room. Start with a 32-bit BAR for
-compatibility with this older B85 firmware. Marking a framebuffer-only BAR
-prefetchable is desirable if the XDMA core and interconnect preserve the
-required semantics, because firmware and early OS mappings can then use
-write-combining.
+A 1920x1080 32-bit framebuffer needs 8,294,400 bytes. An 8 MiB binary window
+holds one such frame and leaves 94,208 bytes, including a reserved scratch
+page. The validated shared BAR2 is currently 64-bit and prefetchable, and this
+B85 host assigned it below 4 GiB. UEFI software must discover its actual base
+and must not assume that placement. If a future design introduces a dedicated
+framebuffer BAR, a 32-bit prefetchable BAR remains worth evaluating for older
+firmware compatibility.
 
-There are two Vivado realizations to evaluate:
+There are two Vivado realizations:
 
-1. Configure a separate XDMA PCI-to-AXI bridge BAR translated to DDR address
-   `0x81000000`. This is the cleanest PCI contract.
-2. If this 7-series XDMA configuration exposes only the existing
-   `M_AXI_BYPASS`, enlarge/repartition that aperture and add address translation
-   so one subwindow reaches DDR while the low subwindow retains the register
-   map.
+1. The implemented shared map keeps translation `0x3f000000`, control IPs at
+   `0x3f000000-0x3f07ffff`, and maps MIG at
+   `0x3f800000-0x3fffffff`. Only host offsets
+   `0x00000000-0x00ffffff` are used. VDMA independently maps the same MIG
+   offset zero at `0x40000000`.
+2. A future separate framebuffer BAR remains the cleanest firmware contract
+   if this 7-series XDMA configuration can expose it.
 
-Do not choose between these from documentation alone. Create a minimal Vivado
-experiment and verify the generated `.hwh`, PCI BAR layout, AXI addresses, and
-read/write behavior before integrating GOP.
+Do not place a required segment in host offsets `0x01000000-0x01ffffff` with
+the current translation; ILA proved that those upper offsets alias. Equal AXI
+addresses across bypass and VDMA masters are not necessary, but both mappings
+must select the same physical MIG offsets.
+
+Use the implemented shared map for the first Shell application and GOP driver;
+it has passed HWH, kernel, and ILA validation. Revisit a separate framebuffer
+BAR only if firmware compatibility, performance, or ownership testing exposes
+a concrete limitation.
 
 ## Framebuffer data path
 
@@ -126,7 +137,7 @@ compression, or evaluate a supported 7-series Tandem PROM flow.
 ## References
 
 - [AMD PG195 PCIe BARs and Expansion ROM](https://docs.amd.com/r/en-US/pg195-pcie-dma/PCIe-BARs-Tab)
+- [AMD PCIe address translation alignment checks](https://docs.amd.com/r/en-US/pg194-axi-bridge-pcie-gen3/Addressing-Checks)
 - [AMD PG054 7-series PCIe configuration timing](https://docs.amd.com/r/en-US/pg054-7series-pcie/Configuration-Access-Specification-Requirements)
 - [Current Vivado recreation source](../../vivado_project/PCIe.tcl)
 - [Current hardware export](../../fpga_hardware/PCIe_wrapper/PCIe.hwh)
-

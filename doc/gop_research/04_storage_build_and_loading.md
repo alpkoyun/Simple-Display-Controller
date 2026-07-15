@@ -11,6 +11,13 @@ firmware/uefi/
   SimpleDisplayPkg/
     SimpleDisplayPkg.dec
     SimpleDisplayPkg.dsc
+    Include/
+      SimpleDisplayHardware.h
+    Library/
+      SimpleDisplayHwLib/
+    Application/
+      SimpleDisplayBringup/
+      SimpleDisplayGopTest/
     SimpleDisplayGopDxe/
       SimpleDisplayGopDxe.inf
       DriverBinding.c
@@ -74,7 +81,15 @@ images in one Option ROM, but that is not needed for the first milestone.
 
 ## Development loading sequence
 
-### Phase 1: manual UEFI Shell load
+### Phase 0: UEFI Shell bring-up application
+
+Run `SimpleDisplayBringup.efi` first. It should enumerate the PCI function,
+discover and validate BAR2, perform the non-destructive scratch test, program
+the `1280x720@60` pipeline, and display a deterministic frame while printing
+each checkpoint. This isolates firmware MMIO and video initialization from GOP
+Driver Binding and protocol installation.
+
+### Phase 1: manual UEFI Shell driver load
 
 Use a FAT-formatted USB drive so driver failures cannot make the installed OS
 unbootable:
@@ -96,6 +111,9 @@ dh -p GraphicsOutput
 Exact Shell device names and command options must be recorded from the actual
 firmware. Serial/debug output should identify `Supported()`, `Start()`, BAR
 discovery, EDID, `SetMode()`, and GOP installation.
+
+The detailed execution and evidence gates are in the
+[GOP firmware development package](../development_work/gop_firmware_implementation/README.md).
 
 ### Phase 2: automatic load from an EFI System Partition
 
@@ -139,4 +157,3 @@ only; a JTAG-loaded bitstream appears too late to provide cold-boot GOP.
 - [EDK II EFI System Partition distribution](https://tianocore-docs.github.io/edk2-UefiDriverWritersGuide/draft/32_distributing_uefi_drivers/323_efi_system_partition.html)
 - [EDK II INF Option ROM packaging](https://tianocore-docs.github.io/edk2-UefiDriverWritersGuide/draft/18_pci_driver_design_guidelines/187_pci_option_rom_images/1872_using_inf_file_to_generate_pci_option_rom_ima.html)
 - [Current SPI programming script](../../vivado_project/scripts/program_spi_from_bin.tcl)
-

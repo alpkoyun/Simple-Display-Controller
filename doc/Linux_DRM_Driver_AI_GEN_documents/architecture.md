@@ -19,9 +19,9 @@ while using XDMA H2C AXI-stream to deliver each rendered frame to the FPGA.
 - The FPGA stores incoming pixels in the VDMA DDR frame ring before video
   output.
 - Linux configures the FPGA video pipeline through the XDMA AXI-Lite bypass
-  BAR in this bitstream. VDMA programming targets `axi_vdma_0` at bypass
-  offset `0x00040000`, using AXI VDMA register offsets rather than XDMA
-  engine/config offsets.
+  BAR in this bitstream. VDMA programming targets AXI address `0x3f040000`,
+  reached at bypass BAR offset `0x00040000`, using AXI VDMA register offsets
+  rather than XDMA engine/config offsets.
 
 ## Linux Model
 

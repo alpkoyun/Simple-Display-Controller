@@ -94,6 +94,7 @@ frame upload, but not necessarily exercising the CPU overlay-composition path.
 | `upload_enabled` | bool | `true` | Enables XDMA frame upload; set to false for DRM-only diagnostics. |
 | `debug_logging` | bool | `false` | Enables extra connector, modeset, upload, and DMA logs. |
 | `configure_pipeline` | bool | `true` | Programs FPGA video IPs through the XDMA bypass BAR during probe and modeset. |
+| `ddr_bypass_test` | bool | `false` | Diagnostic-only direct bypass-to-DDR read/write and scanout-pattern test. Requires `upload_enabled=0 configure_pipeline=1` and a non-aliased, representable bypass DDR range. |
 | `enable_overlay` | bool | `false` | Exposes one experimental CPU-composited KMS overlay plane. |
 | `composition_backend` | charp | `cpu` | Selects the composition backend. Only `cpu` is implemented; `fpga` is reserved for later hardware composition. |
 

@@ -6,6 +6,12 @@ Create an EDK II X64 UEFI boot-service PCI driver named
 `SimpleDisplayGopDxe`. It follows the UEFI Driver Model and creates one HDMI
 child handle beneath the FPGA PCI controller.
 
+Before building the driver, create a verbose `SimpleDisplayBringup.efi` UEFI
+Shell application and a shared `SimpleDisplayHwLib`. The application should
+prove PCI/BAR discovery, scratch access, pipeline programming, and a visible
+frame while it can still print each step to the existing firmware console.
+Only then add Driver Binding and GOP protocol ownership around the same library.
+
 Suggested source split:
 
 | File | Responsibility |
@@ -52,9 +58,10 @@ scanout merely because boot services are ending.
 ### `QueryMode()`
 
 Return a newly allocated `EFI_GRAPHICS_OUTPUT_MODE_INFORMATION` with exact
-resolution, `PixelsPerScanLine`, and pixel format. Start with one validated
-mode, `1024x768@60`, to reduce clocking and EDID variables. Then add modes from
-the existing exact timing whitelist that are also supported by the monitor.
+resolution, `PixelsPerScanLine`, and pixel format. Start with the live-validated
+direct-BAR mode, `1280x720@60`, to reuse the exact Linux diagnostic timing and
+frame size. Then add `1024x768@60` and other modes from the existing exact
+timing whitelist that are also supported by the monitor.
 
 ### `SetMode()`
 
@@ -137,4 +144,3 @@ flicker-free takeover as a separate milestone.
 - [EDK II `QemuVideoDxe` GOP implementation](https://github.com/tianocore/edk2/blob/master/OvmfPkg/QemuVideoDxe/Gop.c)
 - [EDK II INF-based Option ROM generation](https://tianocore-docs.github.io/edk2-UefiDriverWritersGuide/draft/18_pci_driver_design_guidelines/187_pci_option_rom_images/1872_using_inf_file_to_generate_pci_option_rom_ima.html)
 - [Linux 6.8 firmware framebuffer handoff](https://docs.kernel.org/6.8/gpu/drm-internals.html#managing-ownership-of-the-framebuffer-aperture)
-
