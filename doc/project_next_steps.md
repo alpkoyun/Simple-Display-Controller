@@ -5,7 +5,7 @@ commands and raw runtime evidence belong in
 `Linux_DRM_Driver/tests/TEST_LOG.md`; focused development packages belong under
 `doc/development_work/`.
 
-Last reviewed: 2026-07-16
+Last reviewed: 2026-07-25
 
 ## Current status
 
@@ -40,14 +40,22 @@ Still failing on the current export:
 The direct GOP path does not depend on H2C. Native `fpga_drm` takeover does, so
 the two tracks proceed independently until the handoff milestone.
 
+The tracked XDMA Expansion-ROM integration is now live in FPGA SRAM. After
+JTAG programming and a reboot, Linux enumerated revision `0x00`, preserved
+64 KiB BAR0 and 64 MiB BAR2, advertised a 4 KiB Expansion ROM, and returned
+three byte-exact 4096-byte reads with the pinned transport-ROM hash. The PCI
+Command, ROM BAR, enable counter, and unbound driver state were restored after
+the proof, with no unexpected PCIe/AER kernel errors.
+
 ## Current workflow decisions
 
 ### Hardware source
 
-The design is still being changed by hand. The export under
-`fpga_hardware/PCIe_wrapper/` is the authority for current driver and live-test
-work. Synchronizing the tracked Vivado recreate/export source is deferred until
-the hardware contract is finished and becomes a freeze/release gate.
+The tracked recreate/export under `vivado_project/` is reconciled to the
+validated 64 MiB BAR2/shared-DDR contract and is authoritative for the
+Expansion-ROM integration. The accepted ROM-capable live image was built in an
+isolated disposable project from that source. `fpga_hardware/PCIe_wrapper/`
+remains the previous deployed artifact set and was deliberately not overwritten.
 
 ### GOP modes and EDID
 
@@ -80,12 +88,14 @@ consumers and Linux handoff, and only then embed the driver in the FPGA image.
 | Pending | Commit canonical GOP docs and validation scripts | Development packages and helper scripts are currently untracked. |
 | Done | Pinned EDK II X64 build | `edk2-stable202605` clean DEBUG/GCC builds produce three repeatable X64 EFI hashes. |
 | Done | UEFI firmware source set | Shared hardware library, bring-up app, GOP DXE driver, GOP test app, and host contract test are implemented. |
+| Done | 4 KiB Expansion-ROM transport | Post-reboot config space advertises 4 KiB; three 4096-byte Linux reads match the pinned ROM input byte-for-byte. |
+| Pending | Live SDC1 and display regressions | The repo module builds for the rebooted kernel, but is not installed and non-interactive `insmod` is not authorized. After installing it, check the identity block, DDR save/write/read/restore, scanout, ILAs, BAR2/ROM separation, and binding. |
 | Pending | UEFI PCI/BAR/scratch probe | Shell application reports `PCI_MATCH`, `BAR2_OK`, and `SCRATCH_RESTORE_OK`. |
 | Pending | UEFI visible frame | Shell application shows stable correct `1280x720@60` color bars. |
 | Pending | UEFI runtime GOP and BLT | GOP handle, empty EDID protocols, fixed tested modes, and complete BLT tests pass. |
 | Pending | Firmware console/bootloader | A real firmware or bootloader consumer uses the FPGA GOP. |
 | Blocked by H2C | Native Linux handoff | GOP to early framebuffer to working native `fpga_drm`. |
-| Pending | Hardware version register and Option ROM | Added only after manual GOP is repeatable. |
+| In progress | Hardware ABI and EFI Option ROM | SDC1 and 4 KiB transport are implemented; live SDC1 proof and Shell-gated 32 KiB EFI packaging remain. |
 | Pending | Cold/warm boot reliability | Planned AC-power and warm-reboot matrix passes. |
 
 ## Immediate next steps
@@ -139,8 +149,11 @@ alternative to H2C recovery.
 - prove firmware-console and bootloader selection separately from GOP protocol
   existence;
 - implement early Linux firmware-framebuffer ownership and native DRM takeover;
-- add the hardware contract/version register;
-- add and validate the read-only PCI Expansion ROM path; and
+- live-validate the source-complete SDC1 hardware ABI register;
+- repeat the BAR2/display/DRM regressions against the accepted 4 KiB
+  Expansion-ROM transport build;
+- after manual Shell GOP validation, package and implement the gated 32 KiB
+  EFI Option ROM; and
 - run the full cold/warm reliability and recovery matrix.
 
 ## Deferred Linux display work

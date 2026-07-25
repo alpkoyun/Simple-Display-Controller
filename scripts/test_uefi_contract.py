@@ -41,10 +41,13 @@ def main() -> int:
         "SIMPLE_DISPLAY_DEVICE_ID": 0x7024,
         "SIMPLE_DISPLAY_BAR_INDEX": 2,
         "SIMPLE_DISPLAY_BAR_MIN_SIZE": 0x04000000,
+        "SIMPLE_DISPLAY_IDENTITY_OFFSET": 0x00080000,
         "SIMPLE_DISPLAY_FRAMEBUFFER_OFFSET": 0x02000000,
         "SIMPLE_DISPLAY_SCRATCH_OFFSET": 0x03FFF000,
         "SIMPLE_DISPLAY_DDR_FRAME_ADDRESS": 0x3E000000,
         "SIMPLE_DISPLAY_MAX_FRAME_BYTES": 0x007E9000,
+        "SIMPLE_DISPLAY_ABI_MAGIC": 0x31434453,
+        "SIMPLE_DISPLAY_ABI_VERSION": 0x00010000,
     }
     for name, value in constants.items():
         require(
@@ -88,6 +91,21 @@ def main() -> int:
     require(gop, r"MAX_UINTN\s*-\s*Width", "BLT addition overflow guard")
     require(gop, r"EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER", "HDMI child ownership")
     require(gop, r"SimpleDisplayHwProgramMode", "SetMode hardware programming")
+    require(
+        hw,
+        r"Magic\s*!=\s*SIMPLE_DISPLAY_ABI_MAGIC",
+        "automatic-deployment ABI magic rejection",
+    )
+    require(
+        hw,
+        r"Context->AbiVersion\s*!=\s*SIMPLE_DISPLAY_ABI_VERSION",
+        "automatic-deployment ABI version rejection",
+    )
+    require(
+        hw,
+        r"Context->AbiFeatures\s*&\s*SIMPLE_DISPLAY_ABI_REQUIRED_FEATURES",
+        "automatic-deployment feature-bit rejection",
+    )
 
     print("UEFI_CONTRACT_PASS")
     print(f"checked {len(MODES)} fixed 60 Hz timing candidates; GOP exposes mode 0 until Shell validation")

@@ -30,7 +30,6 @@ EXPECTED_XDMA_PARAMETERS = {
     "PF0_BAR0_APERTURE_SIZE": "0x0A",
     "PF0_DEVICE_ID": "0x7024",
     "PF0_CLASS_CODE": "0x038000",
-    "PF0_EXPANSION_ROM_ENABLE": "FALSE",
     "axist_bypass_scale": "Megabytes",
     "axist_bypass_size": "64",
     "pciebar2axibar_axist_bypass": "0x3c000000",
@@ -82,6 +81,12 @@ def parse_args() -> argparse.Namespace:
             "the XDMA bypass translation"
         ),
     )
+    parser.add_argument(
+        "--expansion-rom-stage",
+        choices=("off", "transport", "efi"),
+        default="off",
+        help="expected Expansion ROM/SDC1 ABI state in the HWH",
+    )
     return parser.parse_args()
 
 
@@ -89,13 +94,20 @@ def integer(attribute: str) -> int:
     return int(attribute, 0)
 
 
-def check_hwh(path: Path) -> list[str]:
+def canonical_instance(name: str) -> str:
+    """Normalize the MIG name emitted by flat and hierarchical HWH exports."""
+    if name == "mig_7series_0" or name.endswith("_mig_7series_0"):
+        return "mig_7series_0"
+    return name
+
+
+def check_hwh(path: Path, expansion_rom_stage: str) -> list[str]:
     root = ET.parse(path).getroot()
     errors: list[str] = []
     ranges = list(root.iter("MEMRANGE"))
 
     bypass = {
-        item.attrib["INSTANCE"]: item
+        canonical_instance(item.attrib["INSTANCE"]): item
         for item in ranges
         if item.attrib.get("MASTERBUSINTERFACE") == "M_AXI_BYPASS"
     }
@@ -115,12 +127,79 @@ def check_hwh(path: Path) -> list[str]:
                 f"{instance}: expected {expected}, got {actual}"
             )
 
+    if expansion_rom_stage != "off":
+        rom_size = 0x1000 if expansion_rom_stage == "transport" else 0x8000
+        extra_ranges = {
+            "expansion_rom": (
+                "REGISTER",
+                0x01000000,
+                0x01000000 + rom_size - 1,
+            ),
+            "identity_regs": ("REGISTER", 0x3C080000, 0x3C08FFFF),
+        }
+        for instance, (memtype, base, high) in extra_ranges.items():
+            item = bypass.get(instance)
+            if item is None:
+                errors.append(f"missing M_AXI_BYPASS range for {instance}")
+                continue
+            actual = (
+                item.attrib.get("MEMTYPE"),
+                integer(item.attrib["BASEVALUE"]),
+                integer(item.attrib["HIGHVALUE"]),
+            )
+            expected = (memtype, base, high)
+            if actual != expected:
+                errors.append(f"{instance}: expected {expected}, got {actual}")
+
+        module_parameters = {
+            module.attrib.get("INSTANCE", ""): {
+                parameter.attrib["NAME"]: parameter.attrib.get("VALUE", "")
+                for parameter in module.iter("PARAMETER")
+            }
+            for module in root.iter("MODULE")
+        }
+        rom_parameters = module_parameters.get("expansion_rom", {})
+        expected_mem = (
+            "simple_display_transport_rom_32.mem"
+            if expansion_rom_stage == "transport"
+            else "simple_display_gop_option_rom_32.mem"
+        )
+        if rom_parameters.get("ROM_BYTES") != str(rom_size):
+            errors.append(
+                "expansion_rom ROM_BYTES: "
+                f"expected {rom_size}, got {rom_parameters.get('ROM_BYTES')}"
+            )
+        if rom_parameters.get("ROM_INIT_FILE") != expected_mem:
+            errors.append(
+                "expansion_rom ROM_INIT_FILE: "
+                f"expected {expected_mem}, got "
+                f"{rom_parameters.get('ROM_INIT_FILE')}"
+            )
+
+        identity_parameters = module_parameters.get("identity_regs", {})
+        aperture_value = identity_parameters.get("ROM_APERTURE_BYTES", "")
+        try:
+            normalized_aperture = aperture_value.strip('"')
+            identity_aperture = (
+                int(normalized_aperture, 2)
+                if set(normalized_aperture) <= {"0", "1"}
+                else integer(normalized_aperture)
+            )
+        except ValueError:
+            identity_aperture = -1
+        if identity_aperture != rom_size:
+            errors.append(
+                "identity_regs ROM_APERTURE_BYTES: "
+                f"expected {rom_size}, got {aperture_value}"
+            )
+
     for master in ("M_AXI_MM2S", "M_AXI_S2MM"):
         matches = [
             item
             for item in ranges
             if item.attrib.get("MASTERBUSINTERFACE") == master
-            and item.attrib.get("INSTANCE") == "mig_7series_0"
+            and canonical_instance(item.attrib.get("INSTANCE", ""))
+            == "mig_7series_0"
         ]
         if len(matches) != 1:
             errors.append(f"expected one {master} DDR range, found {len(matches)}")
@@ -150,6 +229,23 @@ def check_hwh(path: Path) -> list[str]:
             actual = parameters.get(name)
             if actual != expected:
                 errors.append(f"xdma_0 {name}: expected {expected}, got {actual}")
+        rom_enabled = "FALSE" if expansion_rom_stage == "off" else "TRUE"
+        if parameters.get("PF0_EXPANSION_ROM_ENABLE") != rom_enabled:
+            errors.append(
+                "xdma_0 PF0_EXPANSION_ROM_ENABLE: "
+                f"expected {rom_enabled}, got "
+                f"{parameters.get('PF0_EXPANSION_ROM_ENABLE')}"
+            )
+        if expansion_rom_stage != "off":
+            expected_aperture = (
+                "0x005" if expansion_rom_stage == "transport" else "0x008"
+            )
+            if parameters.get("PF0_EXPANSION_ROM_APERTURE_SIZE") != expected_aperture:
+                errors.append(
+                    "xdma_0 PF0_EXPANSION_ROM_APERTURE_SIZE: "
+                    f"expected {expected_aperture}, got "
+                    f"{parameters.get('PF0_EXPANSION_ROM_APERTURE_SIZE')}"
+                )
 
     return errors
 
@@ -242,7 +338,7 @@ def main() -> int:
 
     if inputs_exist:
         try:
-            errors.extend(check_hwh(args.hwh))
+            errors.extend(check_hwh(args.hwh, args.expansion_rom_stage))
             errors.extend(check_driver(args.driver))
         except (ET.ParseError, OSError, ValueError) as error:
             errors.append(str(error))
@@ -254,6 +350,7 @@ def main() -> int:
         return 1
 
     print(f"hardware contract: PASS for normal H2C display ({args.hwh})")
+    print(f"  Expansion ROM stage             {args.expansion_rom_stage}")
     for instance, (_, base, high) in EXPECTED_BYPASS_RANGES.items():
         print(f"  {instance:30s} 0x{base:08x}-0x{high:08x}")
     print("  VDMA DDR masters               0x3e000000-0x3fffffff")
@@ -265,6 +362,13 @@ def main() -> int:
     print("  GOP VDMA scanout                0x3e000000-0x3e7e8fff")
     print("  DDR scratch page                0x3ffff000 (host+0x03fff000)")
     print("  fpga_drm four-frame ring        0x3e000000-0x3ffa6fff")
+    if args.expansion_rom_stage != "off":
+        rom_size = 0x1000 if args.expansion_rom_stage == "transport" else 0x8000
+        print(
+            "  Expansion ROM AXI destination   "
+            f"0x01000000-0x{0x01000000 + rom_size - 1:08x}"
+        )
+        print("  SDC1 identity registers         0x3c080000-0x3c08ffff")
     for warning in warnings:
         print(f"  WARNING: {warning}")
     if args.require_ddr_bypass:
