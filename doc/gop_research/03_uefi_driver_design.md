@@ -21,7 +21,7 @@ Suggested source split:
 | `Gop.c` | `QueryMode()`, `SetMode()`, `Blt()`, mode state. |
 | `Hardware.c` | PCI BAR discovery and video-IP register access. |
 | `Modes.c` | Exact timing table and pixel-clock parameters. |
-| `Edid.c` | DDC/EDID acquisition, validation, and EDID protocol instances. |
+| `Edid.c` | Empty EDID Discovered/Active protocol instances for this board; no DDC read path is available. |
 | `Hdmi.c` | HDMI transmitter I2C programming. |
 | `SimpleDisplay.h` | Private data, signatures, constants, and prototypes. |
 
@@ -41,13 +41,16 @@ cards.
    design;
 3. use `GetBarAttributes()` to discover BAR bases and sizes instead of assuming
    host physical addresses;
-4. verify register and framebuffer apertures with a hardware magic/version
-   register;
+4. validate register and framebuffer apertures; require a hardware
+   magic/version register only after that register is added for Option ROM
+   deployment;
 5. create the HDMI child device path;
-6. read EDID through AXI IIC;
-7. build a safe mode list;
+6. install EDID Discovered and EDID Active with `SizeOfEdid=0` and
+   `Edid=NULL` because this setup has no usable EDID read interface;
+7. build the fixed tested mode list;
 8. allocate GOP mode/private structures;
-9. install GOP, EDID Discovered, EDID Active, and Device Path protocols; and
+9. install GOP and Device Path protocols without visibly updating the output;
+   and
 10. allow firmware console policy to connect the child.
 
 `Stop()` must uninstall child protocols and release resources. Do not turn off
@@ -59,9 +62,11 @@ scanout merely because boot services are ending.
 
 Return a newly allocated `EFI_GRAPHICS_OUTPUT_MODE_INFORMATION` with exact
 resolution, `PixelsPerScanLine`, and pixel format. Start with the live-validated
-direct-BAR mode, `1280x720@60`, to reuse the exact Linux diagnostic timing and
-frame size. Then add `1024x768@60` and other modes from the existing exact
-timing whitelist that are also supported by the monitor.
+direct-BAR mode, `1280x720@60`, plus `800x600@60` or `640x480@60` from the
+existing Linux timing table. Add other fixed whitelist modes only after UEFI
+scanout validation. GOP mode information does not expose refresh rate, so avoid
+simultaneously advertising indistinguishable 30 Hz and 60 Hz entries for one
+resolution without a separate timing-selection policy.
 
 ### `SetMode()`
 
@@ -83,14 +88,17 @@ Use EDK II `FrameBufferBltLib` against the BAR-mapped framebuffer. This is a
 better starting point than custom rectangle code and follows the pattern used
 by upstream EDK II GOP drivers such as `QemuVideoDxe`.
 
-## EDID and mode policy
+## Unavailable EDID and fixed mode policy
 
-UEFI's PCI graphics rules require EDID retrieval for the physical output.
-Reuse the existing AXI IIC path, validate EDID header/checksum, and install the
-discovered bytes on the HDMI child handle. If EDID read fails, expose a small
-safe fallback list rather than arbitrary modelines.
+The HDMI device on this board does not expose a usable, publicly documented
+EDID/DDC read interface in this setup. Do not attempt undocumented transactions
+or fabricate monitor data. Install EDID Discovered and EDID Active on the HDMI
+child with zero size and a null pointer, which is the protocol representation
+for unavailable EDID data.
 
-The firmware mode table should share exact timings with Linux. A future
+The firmware uses a conservative fixed mode table and does not claim that a
+connected monitor supports every entry. The table should share exact timings
+with Linux. A future
 hardware-contract generator can emit C tables for both environments from one
 data file; until then, add a cross-check test that compares the UEFI and DRM
 mode names, active sizes, clocks, porches, sync widths, and polarities.

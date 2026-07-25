@@ -2,6 +2,7 @@ set ltx_file [lindex $argv 0]
 set out_dir [lindex $argv 1]
 set trigger_name [lindex $argv 2]
 set ila_name [lindex $argv 3]
+set trigger_value_arg [lindex $argv 4]
 if {$ltx_file eq ""} {
     set ltx_file "fpga_hardware/PCIe_wrapper/PCIe_wrapper.ltx"
 }
@@ -13,6 +14,9 @@ if {$trigger_name eq ""} {
 }
 if {$ila_name eq ""} {
     set ila_name "xdma"
+}
+if {$trigger_value_arg eq ""} {
+    set trigger_value_arg "1"
 }
 file mkdir $out_dir
 
@@ -102,7 +106,11 @@ if {$trigger_probe eq ""} {
 }
 
 puts "TRIGGER_PROBE: $trigger_probe"
-set_property TRIGGER_COMPARE_VALUE {eq1'b1} $trigger_probe
+set trigger_width [get_property WIDTH $trigger_probe]
+set trigger_value [expr {$trigger_value_arg}]
+set trigger_compare [format "eq%d'h%X" $trigger_width $trigger_value]
+puts "TRIGGER_COMPARE: $trigger_compare"
+set_property TRIGGER_COMPARE_VALUE $trigger_compare $trigger_probe
 
 if {[catch {set_property CONTROL.TRIGGER_POSITION 0 $stream_ila} err]} {
     puts "WARN: could not set trigger position: $err"

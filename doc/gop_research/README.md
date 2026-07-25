@@ -51,7 +51,7 @@ provides a normal firmware-framebuffer handoff to the OS.
 
 ## Current project findings
 
-Research plus live probing through 2026-07-15 found:
+Research plus live probing through 2026-07-16 found:
 
 | Item | Current state | GOP consequence |
 |---|---|---|
@@ -59,23 +59,36 @@ Research plus live probing through 2026-07-15 found:
 | Secure Boot | Unsupported/off on this AMI B85 host | Unsigned development drivers can be tested here; production signing remains a portability requirement. |
 | FPGA PCI identity | `10ee:7024`, class `038000` | A UEFI PCI driver can match it. Firmware console-selection behavior must be tested because the Intel iGPU is also present. |
 | BAR0 | 64 KiB, non-prefetchable | XDMA control registers. |
-| BAR2 | 32 MiB, 64-bit prefetchable | Uses only non-aliased host offsets `0x00000000-0x00ffffff`; the upper half remains unused. |
+| BAR2 | 64 MiB, 64-bit prefetchable | Translation `0x3c000000` makes the complete `0x00000000-0x03ffffff` host-offset range non-aliased. |
 | Expansion ROM | Disabled; config register `0x30` is zero | Firmware has no card-local driver to load. |
-| Frame transport | XDMA H2C AXI stream into VDMA S2MM | Works for Linux, but is not a directly writable GOP framebuffer. |
-| Frame storage | VDMA has 1 GiB at `0x40000000-0x7fffffff`; bypass maps the first 8 MiB at `0x3f800000-0x3fffffff` | Different master addresses can select the same MIG offsets; the normal four-frame ring remains at `0x41000000`. |
-| Direct bypass test | Static contract, scratch save/write/read/restore, `1280x720` frame write, and AXI ILA all pass | The framebuffer mechanism needed by a first GOP driver is proved; maximum-resolution and firmware validation remain. |
+| Frame transport | Direct BAR writes for GOP; XDMA H2C AXI stream for the Linux upload path | Direct BAR scanout passes on the current export. The current XDMA H2C requester stalls before asserting AXI-stream `TVALID`, so normal Linux uploads remain a separate hardware/debug item. |
+| Frame storage | Bypass and both VDMA masters map 32 MiB at `0x3e000000-0x3fffffff` | One shared numeric map holds the normal four-frame ring and the GOP frame. |
+| Direct bypass test | Passed on the current 32 MiB export at `1280x720@60` | Scratch access passed; the driver wrote `3,686,400` bytes at bypass/VDMA address `0x3e000000`, and the user confirmed a correct visible color bar. |
 | Power-on image path | `PCIe_wrapper.bin` can be programmed into `mt25ql128` SPI flash | Correct place for the deployable FPGA image. Cold-boot timing still needs measurement. |
 
-The updated export adds an 8 MiB MIG segment at bypass AXI
-`0x3f800000-0x3fffffff`, reached through host offsets
-`0x00800000-0x00ffffff`. These offsets do not overlap the set translation bits,
-so the addresses are representable. Bypass and VDMA use different numeric AXI
-addresses for MIG offset zero. The export still records
+The updated export adds a 32 MiB MIG segment at bypass AXI
+`0x3e000000-0x3fffffff`, reached through host offsets
+`0x02000000-0x03ffffff`. The full 64 MiB aperture is aligned to translation
+`0x3c000000`, so the addresses are representable without aliases. Bypass and
+VDMA use the same numeric DDR addresses. The export still records
 `PF0_EXPANSION_ROM_ENABLE=FALSE`.
+
+Live validation on 2026-07-16 proves the GOP-relevant path end to end:
+
+```text
+host BAR2+0x02000000 -> bypass AXI 0x3e000000 -> DDR
+DDR 0x3e000000 -> VDMA MM2S -> HDMI -> correct visible color bars
+```
+
+This result does not clear the independent XDMA H2C path. A clean normal-mode
+test left the H2C engine `BUSY` with `completed_desc_count=0`. The XDMA stream
+ILA captured VDMA `TREADY=1`, while an ILA armed on `TVALID=1` did not trigger
+during the timed-out transfer. The failure is therefore upstream of VDMA
+S2MM and does not invalidate the direct-BAR framebuffer chosen for GOP.
 
 The completed hardware evolution, driver implementation, ILA evidence, and
 remaining GOP handoff are documented in
-[PCIe DDR bypass GOP prerequisite](../development_work/pcie_ddr_bypass_gop_prerequisite/README.md).
+[Shared 32 MiB DDR GOP prerequisite](../development_work/shared_32m_ddr_gop_prerequisite/README.md).
 
 Relevant repository evidence:
 
@@ -102,7 +115,7 @@ Relevant repository evidence:
 | Decision | Recommendation |
 |---|---|
 | Firmware API | UEFI GOP, not legacy VGA BIOS/VBE. |
-| First mode | Fixed `1280x720@60`, reusing the live-validated bypass/VDMA setup; then add EDID-filtered modes including `1024x768@60`. |
+| Mode policy | Start with live-validated `1280x720@60` plus `640x480@60` or `800x600@60`; add only fixed `fpga_drm` timings that pass UEFI scanout. EDID data is unavailable on this board setup. |
 | Pixel layout | GOP `PixelBlueGreenRedReserved8BitPerColor`, matching little-endian DRM `XRGB8888` byte layout. |
 | Frame transport in GOP | CPU writes to a PCI BAR mapped to FPGA DDR. |
 | Final driver location | UEFI PCI Option ROM served by FPGA BRAM. |

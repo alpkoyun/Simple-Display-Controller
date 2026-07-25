@@ -24,7 +24,7 @@ firmware/uefi/
       Gop.c
       Hardware.c
       Modes.c
-      Edid.c
+      Edid.c                    empty EDID protocol instances
       Hdmi.c
       SimpleDisplay.h
 
@@ -110,7 +110,7 @@ dh -p GraphicsOutput
 
 Exact Shell device names and command options must be recorded from the actual
 firmware. Serial/debug output should identify `Supported()`, `Start()`, BAR
-discovery, EDID, `SetMode()`, and GOP installation.
+discovery, empty EDID protocol installation, `SetMode()`, and GOP installation.
 
 The detailed execution and evidence gates are in the
 [GOP firmware development package](../development_work/gop_firmware_implementation/README.md).

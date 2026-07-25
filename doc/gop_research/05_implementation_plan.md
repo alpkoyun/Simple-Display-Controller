@@ -36,21 +36,21 @@ is missing, fix FPGA configuration timing before debugging UEFI MMIO or GOP.
 
 ## Stage 2: add a BAR-backed scanout frame
 
-Status on 2026-07-15: the strict hardware contract, non-destructive scratch
-test, AXI ILA capture, and a full active `1280x720` frame written through BAR2
-and scanned by VDMA all pass. Normal four-frame Linux display operation also
-passes after restoration. A live maximum-resolution run remains before this
-stage is fully hardened; an independent Linux userspace writer is optional once
-the more directly relevant UEFI Shell bring-up application exists. See the
-[development record](../development_work/pcie_ddr_bypass_gop_prerequisite/README.md).
+Status on 2026-07-16: the strict hardware contract, non-destructive scratch
+test, and a full active `1280x720` frame written through BAR2 and scanned by
+VDMA all pass with correct visible color bars. Normal four-frame XDMA H2C
+uploads fail on this export before stream `TVALID`; that is a separate native
+Linux recovery track. A live maximum-resolution run remains before this stage
+is fully hardened. See the
+[current development record](../development_work/shared_32m_ddr_gop_prerequisite/README.md).
 
-- Map an 8 MiB framebuffer slice into a non-aliased portion of the PCI
-  aperture and route it to DDR frame store 0.
+- Map the 32 MiB DDR frame ring into the aligned PCI aperture and route GOP
+  writes to frame store 0.
 - Verify every used host offset by the actual XDMA translation composition;
   do not accept an address map only because Vivado exports the intended
   segments.
 - Park VDMA MM2S on that frame.
-- Keep existing register MMIO and XDMA H2C streaming functional.
+- Keep register MMIO functional and track XDMA H2C recovery independently.
 - Write a Linux userspace BAR test only while `fpga_drm`/`xdma` are unbound.
 - Fill solid colors and a test pattern directly through the BAR.
 
@@ -58,18 +58,19 @@ Gate: `scripts/check_fpga_hardware_contract.py --require-ddr-bypass` passes,
 and ordinary PCI memory writes without XDMA descriptors change the HDMI image
 at the first firmware mode, `1280x720@60`, and at maximum intended resolution.
 
-## Stage 3: create a Shell-loaded GOP driver
+## Stage 3: create a Shell-loaded fixed-mode GOP driver
 
 - First build a verbose UEFI Shell application that discovers the FPGA BARs,
   repeats the scratch test, programs the one-mode pipeline, and displays a
   direct-BAR color pattern. Move its hardware code into a shared library.
 - Add `firmware/uefi/SimpleDisplayPkg` and reproducible EDK II build scripts.
-- Implement PCI binding and BAR/version discovery.
-- Port fixed-mode pipeline setup.
+- Implement PCI binding and BAR discovery. Add hardware-version matching only
+  after the version register exists.
+- Port the fixed timing profiles already supported by `fpga_drm`.
 - Implement GOP `QueryMode()`, `SetMode()`, and all `Blt()` operations with
   `FrameBufferBltLib`.
-- Add EDID Discovered/Active protocols; allow a safe fallback mode on EDID
-  failure.
+- Add EDID Discovered/Active protocols with zero-length data; this board setup
+  has no usable EDID read path.
 - Load from USB in UEFI Shell and connect the controller.
 
 Gate: `dh -p GraphicsOutput` finds the FPGA child, a GOP test application can
@@ -102,9 +103,9 @@ copy of the driver.
 
 ## Stage 6: hardening and portability
 
-- Add exact EDID-filtered modes from the Linux whitelist.
-- Test no-monitor, invalid EDID, HDMI I2C timeout, VDMA/clock lock failure, and
-  unsupported BAR allocation.
+- Add exact fixed modes from the Linux whitelist after per-mode validation.
+- Test no-monitor, empty EDID protocols, HDMI I2C timeout, VDMA/clock lock
+  failure, and unsupported BAR allocation.
 - Verify every `Blt()` boundary and overlapping video-to-video copy.
 - Fuzz/validate Option ROM parsing inputs in host-side tests.
 - Add signed-image and Secure Boot testing on a capable platform.
@@ -124,7 +125,7 @@ small and curated. Each validated release should record:
 - Option ROM header dump;
 - PCI config and BAR layout;
 - UEFI Shell `drivers`, `devices`, and GOP protocol output;
-- EDID hash and chosen mode;
+- empty EDID protocol state and chosen fixed mode;
 - cold/warm boot counts;
 - monitor-visible checkpoints;
 - Linux early-console and `fpga_drm` takeover logs; and
@@ -139,7 +140,7 @@ small and curated. Each validated release should record:
 | iGPU remains selected as the only console | Inspect/change `ConOut` or firmware primary-display setting after GOP is known to exist. |
 | XDMA cannot expose the desired simultaneous BAR layout | Run a minimal generated-design experiment before rewriting the video design. |
 | BAR translation aliases the framebuffer subwindow | Enforce aperture alignment in the export checker and require a live write/read/restore test. |
-| Large/non-prefetchable BAR is slow or cannot be allocated | Start with one 8 MiB frame slice and one mode; inspect firmware resource allocation. |
+| Large/non-prefetchable BAR is slow or cannot be allocated | Start with one frame and one mode inside the current 64 MiB BAR; inspect firmware resource allocation. |
 | UEFI and Linux program hardware differently | Share a hardware contract and compare exact mode/register tables. |
 | `simpledrm` conflicts with `fpga_drm` | Add and test the kernel aperture-removal handoff. |
 | Bad ROM/bitstream prevents normal boot display | Keep JTAG recovery and a known-good SPI image; test on a nonessential boot path first. |
@@ -148,10 +149,11 @@ small and curated. Each validated release should record:
 
 Do not begin with the Option ROM. The highest-value first slice is:
 
-1. validate the 8 MiB DDR framebuffer mapping;
+1. use the live-validated shared 32 MiB DDR framebuffer mapping;
 2. build a verbose X64 UEFI Shell bring-up application;
 3. prove `1280x720@60` direct-BAR scanout before Linux loads;
-4. build and manually load a one-mode X64 GOP driver; and
+4. build and manually load a fixed-mode X64 GOP driver with empty EDID
+   protocols; and
 5. exercise GOP with a dedicated BLT/mode test application.
 
 That proves the hardware and firmware contracts independently of Option ROM

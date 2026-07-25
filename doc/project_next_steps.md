@@ -1,293 +1,162 @@
 # Project Next Steps
 
-This is the living next-step tracker for the Simple-Display-Controller
-`fpga_drm` work. Update it after each completed test, driver change, hardware
-change, or workflow decision.
+This is the living project-level tracker for Simple-Display-Controller. Exact
+commands and raw runtime evidence belong in
+`Linux_DRM_Driver/tests/TEST_LOG.md`; focused development packages belong under
+`doc/development_work/`.
 
-## Current Status
+Last reviewed: 2026-07-16
 
-Last reviewed: 2026-06-18
+## Current status
 
-Canonical update location: use this file for project-level next steps and
-`Linux_DRM_Driver/tests/TEST_LOG.md` for exact test commands/results.
+The active project direction is a UEFI Graphics Output Protocol driver using a
+direct BAR-backed DDR framebuffer.
 
-The project has moved from scanout-only validation to a proven CPU-backed KMS
-overlay prototype:
+The July 16 hardware contract is:
 
-- `fpga_drm` exposes explicit KMS objects: one CRTC, one primary plane, one
-  virtual encoder, one virtual connector, and an optional overlay plane.
-- `enable_overlay=1 composition_backend=cpu` exposes one `XRGB8888` overlay
-  plane.
-- A direct KMS atomic test has committed primary plus overlay successfully.
-- Kernel logs confirmed `overlay=1`, proving the CPU overlay path was used for
-  at least one XDMA upload.
-- Unload stats confirmed `cpu_compositions=1` after a real overlay commit.
-- Negative atomic tests for scaling and out-of-bounds placement are rejected
-  and counted; focused reject logs were captured with `debug_logging=1`.
-- No render node exists and none is needed for the current KMS-plane milestone.
-- Desktop-manager pickup has been validated for primary-plane scanout, but
-  desktop compositors have not yet been shown to assign surfaces to the overlay
-  plane automatically.
+```text
+PCI function                 10ee:7024, class 038000
+BAR2                         64 MiB, 64-bit prefetchable
+bypass AXI translation      0x3c000000
+shared bypass/VDMA DDR      0x3e000000-0x3fffffff
+GOP framebuffer             BAR2+0x02000000 / AXI 0x3e000000
+scratch page                BAR2+0x03fff000 / AXI 0x3ffff000
+```
 
-Evidence to keep aligned:
+Validated:
 
-- Test log: `Linux_DRM_Driver/tests/TEST_LOG.md`
-- Overlay test design: `Linux_DRM_Driver/tests/doc/kms_overlay_test_design.md`
-- Rendering roadmap background:
-  `doc/Linux_DRM_Driver_AI_GEN_documents/rendering_acceleration_research.md`
+- the strict hardware checker passes;
+- the non-destructive BAR2 scratch test passes;
+- a complete `1280x720@60` XRGB8888 frame written through BAR2 is scanned by
+  VDMA MM2S from the same address; and
+- the attached monitor showed correct color bars.
 
-## Update Rule
+Still failing on the current export:
 
-After each step:
+- normal XDMA H2C uploads remain `BUSY` with zero completed descriptors; and
+- the stream ILA shows VDMA ready (`TREADY=1`) but no XDMA stream data
+  (`TVALID=0`).
 
-1. Add or update a dated entry in the relevant test log.
-2. Update the checklist status in this file.
-3. If the step changes the validated driver behavior, update `README.md` and
-   the relevant document under `doc/Linux_DRM_Driver_AI_GEN_documents/`.
-4. Include the exact commands, important output, and interpretation.
-5. Keep object IDs such as connector, CRTC, and plane IDs as run-specific
-   examples only; do not turn them into assumptions.
+The direct GOP path does not depend on H2C. Native `fpga_drm` takeover does, so
+the two tracks proceed independently until the handoff milestone.
 
-## Milestone Checklist
+## Current workflow decisions
 
-| Status | Milestone | Evidence / Notes |
+### Hardware source
+
+The design is still being changed by hand. The export under
+`fpga_hardware/PCIe_wrapper/` is the authority for current driver and live-test
+work. Synchronizing the tracked Vivado recreate/export source is deferred until
+the hardware contract is finished and becomes a freeze/release gate.
+
+### GOP modes and EDID
+
+This board setup has no usable, publicly documented EDID/DDC read interface
+through its HDMI device. The GOP driver therefore:
+
+- installs EDID Discovered and EDID Active with `SizeOfEdid=0` and
+  `Edid=NULL`;
+- uses a fixed timing table derived from the modes already supported by
+  `fpga_drm`;
+- begins by advertising only the live-validated `1280x720@60` mode;
+- keeps the other Linux-supported 60 Hz timings as source-level candidates;
+  and
+- advertises each additional mode only after it passes UEFI-visible scanout.
+
+### Deployment order
+
+Do not begin with the PCI Option ROM. Prove the hardware from a verbose UEFI
+Shell application, then build a manually loaded GOP driver, then test firmware
+consumers and Linux handoff, and only then embed the driver in the FPGA image.
+
+## Milestone checklist
+
+| Status | Milestone | Evidence or gate |
 |---|---|---|
-| Done | Explicit KMS object refactor | Driver exposes explicit CRTC, primary plane, optional overlay plane, encoder, and connector. |
-| Done | CPU overlay plane prototype | `enable_overlay=1 composition_backend=cpu` exposes the overlay plane. |
-| Done | Direct KMS overlay atomic test tool | `Linux_DRM_Driver/tests/kms_overlay_test.c`. |
-| Done | Direct KMS overlay test-only commit | `atomic TEST_ONLY commit succeeded` in `TEST_LOG.md`. |
-| Done | Direct KMS real overlay commit | `atomic overlay commit succeeded` in `TEST_LOG.md`. |
-| Done | Confirm CPU overlay upload path | Kernel log showed `upload composed frame ... overlay=1`. |
-| Done | Confirm unload-time `cpu_compositions` counter | `TEST_LOG.md` records `cpu_compositions=1` after a real overlay commit. |
-| Done | Add focused atomic reject diagnostics | Live validation recorded scaling and out-of-bounds rejects plus `atomic_rejects=2`. |
-| Pending | Add compositor-friendly plane properties | Start with immutable `rotation=0`; consider alpha/blend only when semantics are implemented. |
-| Pending | Run Weston DRM-backend plane assignment test | Prefer Weston before GNOME/KDE for easier KMS plane reasoning. |
-| Pending | Run GNOME/KDE compositor behavior tests | Check whether mainstream compositors ever assign content to the overlay plane. |
-| Pending | Pick first FPGA-backed display operation | Candidate: hardware cursor or fixed-format overlay blend. |
-| Pending | Build first FPGA composition backend | Keep the same KMS plane contract; replace backend implementation only. |
-| Deferred | Render node / Mesa research track | Do this only after KMS-plane acceleration is useful and stable. |
-
-## Immediate Next Steps
-
-### 1. Add immutable rotation property
-
-Why: compositors often inspect standard plane properties before deciding whether
-a plane is useful. The current overlay does not support rotation, so the honest
-standard property is immutable `rotation=0`.
-
-Acceptance:
-
-- `drm_info /dev/dri/card0` shows rotation support fixed to normal orientation
-- direct overlay test still passes
-- negative tests still produce focused reject diagnostics
-
-Suggested validation flow:
-
-```bash
-sudo systemctl stop display-manager
-sudo modprobe -r fpga_drm
-sudo modprobe fpga_drm debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=0
-sudo setfacl -m u:alpk:rw /dev/dri/card0
-drm_info /dev/dri/card0
-Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only
-Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --scale-overlay
-Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --overlay-out-of-bounds
-sudo dmesg | grep -Ei 'atomic reject|helper-check|out-of-bounds|stats:'
-sudo modprobe -r fpga_drm
-sudo modprobe fpga_drm debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1
-sudo systemctl start display-manager
-```
-
-### 2. Decide alpha and pixel blend mode semantics
-
-Why: alpha and blend properties can make the overlay more compositor-friendly,
-but only if the CPU backend implements the same semantics.
-
-Decision needed:
-
-- keep overlay opaque only for now
-- or implement global alpha / premultiplied coverage in the CPU path
-
-Acceptance if implemented:
-
-- direct test can exercise opaque and alpha cases
-- driver rejects unsupported blend states clearly
-
-### 3. Weston DRM-backend experiment
-
-Why: Weston is easier to reason about than GNOME/KDE for KMS plane assignment.
-
-Goal:
-
-- run Weston directly on `fpga_drm`
-- inspect DRM logs and plane state
-- determine whether Weston assigns any surface to the overlay plane
-
-Acceptance:
-
-- document exact Weston command
-- record whether overlay plane `FB_ID` becomes nonzero
-- record whether kernel logs show `overlay=1`
-
-### 4. First FPGA-backed display operation
-
-Why: once the KMS contract is stable, the next improvement is replacing one CPU
-operation with hardware while keeping the same userspace API.
-
-Recommended candidates:
-
-- hardware cursor
-- fixed-format overlay blend
-
-Selection criteria:
-
-- smallest hardware block
-- easiest test vector
-- minimal new memory-sharing requirements
-- preserves the current KMS plane contract
-
-## Completed Recent Steps
-
-### 2026-06-18: Capture unload-time composition stats
-
-Why: the direct overlay run already proved `overlay=1`, but the unload stats
-line should also record a nonzero `cpu_compositions` counter.
-
-Suggested flow:
-
-```bash
-sudo systemctl stop display-manager
-sudo -n modprobe -r fpga_drm
-sudo -n modprobe fpga_drm debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1
-sudo setfacl -m u:alpk:rw /dev/dri/card0
-Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --overlay 100,80,320,180 --hold 3
-sudo -n modprobe -r fpga_drm
-sudo -n dmesg | grep -Ei 'overlay=1|cpu_compositions|stats:'
-```
-
-Acceptance:
-
-```text
-overlay=1
-cpu_compositions > 0
-```
-
-Result:
-
-```text
-stats: atomic_commits=8321 atomic_rejects=2 frames_queued=8320 frames_uploaded=8311 upload_failures=0 cpu_compositions=1
-```
-
-Evidence: `Linux_DRM_Driver/tests/TEST_LOG.md`.
-
-### 2026-06-18: Add focused overlay atomic-check logging
-
-Why: Weston/GNOME/KDE tests will be hard to interpret if the driver only
-returns a generic atomic failure.
-
-Add logs around these reject points:
-
-- missing framebuffer
-- unsupported format
-- non-linear modifier
-- scaling request
-- out-of-bounds rectangle
-- disabled or mismatched CRTC
-- unsupported composition backend
-
-Target functions:
-
-- `fpga_drm_primary_atomic_check`
-- `fpga_drm_overlay_atomic_check`
-- `fpga_drm_crtc_atomic_flush`
-- CPU composition path
-
-Acceptance:
-
-- known-bad `kms_overlay_test` variants produce clear reject reasons
-- valid primary-plus-overlay commit still succeeds
-- `git diff --check` and module build pass
-
-Implementation and validation status on 2026-06-18:
-
-- source diagnostics implemented
-- `kms_overlay_test` negative options implemented:
-  - `--scale-overlay`
-  - `--overlay-out-of-bounds`
-- `make -C Linux_DRM_Driver/fpga_drm` passed
-- `make -C Linux_DRM_Driver/tests` passed
-- the installed module now matches the repo-built module
-- live validation passed with `debug_logging=1 enable_overlay=1`
-- valid overlay `TEST_ONLY` commit passed
-- scaling negative test failed as expected with `ERANGE`
-- out-of-bounds negative test failed as expected with `EINVAL`
-- unload stats reported `atomic_rejects=2`
-- focused reject logs were captured with fbdev disabled to avoid debug log flood
-
-Latest checked srcversions were:
-
-```text
-repo-built fpga_drm.ko: 9205FC3654816841CF7942C
-installed fpga_drm.ko:  9205FC3654816841CF7942C
-```
-
-Validation reload sequence:
-
-```bash
-sudo systemctl stop display-manager
-sudo modprobe -r fpga_drm
-sudo modprobe fpga_drm debug_logging=1 enable_overlay=1 composition_backend=cpu connector_connected=1 connector_non_desktop=0 enable_fbdev=1
-sudo setfacl -m u:alpk:rw /dev/dri/card0
-```
-
-Validated commands:
-
-```bash
-Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only
-Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --scale-overlay
-Linux_DRM_Driver/tests/kms_overlay_test --device /dev/dri/card0 --commit-test-only --overlay-out-of-bounds
-sudo -n dmesg | grep -Ei 'atomic reject|helper-check|scaling|out-of-bounds|overlay=1|cpu_compositions'
-```
-
-## Longer-Term Tracks
-
-### KMS Composition Track
-
-Continue using standard KMS objects and atomic properties. This is the path most
-likely to be discovered by desktop compositors automatically.
-
-Possible features:
-
-- cursor plane
-- overlay blend
-- global alpha
-- z-position constraints
-- limited scaling
-- additional formats
-
-### FPGA Backend Track
-
-When a CPU feature is proven:
-
-1. keep the KMS API unchanged
-2. add an FPGA backend implementation
-3. run the same test vectors against CPU and FPGA backends
-4. compare output and logs
-
-### Render Node Track
-
-Keep this deferred. A render node alone will not make the desktop render through
-the FPGA. It needs render-safe ioctls, validation, synchronization, userspace
-tests, and likely Mesa or compositor integration.
-
-## How to Close a Step
-
-When a step is complete, update this document with:
-
-- `Done` status in the milestone checklist
-- dated summary under the relevant section
-- command snippets
-- result snippets
-- remaining risk or follow-up
-
-Then update `Linux_DRM_Driver/tests/TEST_LOG.md` if the step involved a test.
+| Done | Shared 32 MiB DDR map | Bypass, MM2S, and S2MM use `0x3e000000-0x3fffffff`. |
+| Done | Direct BAR scratch test | Save/write/read/restore passes at BAR2 `+0x03fff000`. |
+| Done | Direct `1280x720@60` scanout | Correct visible color bars from BAR2 `+0x02000000`. |
+| Blocked | Native XDMA H2C upload | `BUSY`, completed descriptors zero, `TREADY=1`, `TVALID=0`. |
+| Pending | Commit canonical GOP docs and validation scripts | Development packages and helper scripts are currently untracked. |
+| Done | Pinned EDK II X64 build | `edk2-stable202605` clean DEBUG/GCC builds produce three repeatable X64 EFI hashes. |
+| Done | UEFI firmware source set | Shared hardware library, bring-up app, GOP DXE driver, GOP test app, and host contract test are implemented. |
+| Pending | UEFI PCI/BAR/scratch probe | Shell application reports `PCI_MATCH`, `BAR2_OK`, and `SCRATCH_RESTORE_OK`. |
+| Pending | UEFI visible frame | Shell application shows stable correct `1280x720@60` color bars. |
+| Pending | UEFI runtime GOP and BLT | GOP handle, empty EDID protocols, fixed tested modes, and complete BLT tests pass. |
+| Pending | Firmware console/bootloader | A real firmware or bootloader consumer uses the FPGA GOP. |
+| Blocked by H2C | Native Linux handoff | GOP to early framebuffer to working native `fpga_drm`. |
+| Pending | Hardware version register and Option ROM | Added only after manual GOP is repeatable. |
+| Pending | Cold/warm boot reliability | Planned AC-power and warm-reboot matrix passes. |
+
+## Immediate next steps
+
+### 1. Run the implemented Shell bring-up gate
+
+- follow the [first-board UEFI Shell runbook](development_work/gop_firmware_implementation/04_uefi_shell_runbook.md);
+- copy `build/gop/artifacts/SimpleDisplayBringup.efi` to a FAT USB or EFI System
+  Partition;
+- boot UEFI Shell and capture `PCI_MATCH`, `BAR2_OK`, scratch restoration, and
+  every pipeline checkpoint;
+- require stable visible `1280x720@60` color bars before proceeding; and
+- keep the current hand-edited hardware export authoritative until the design
+  is ready to freeze.
+
+### 2. Validate the Shell-loaded GOP
+
+- load `SimpleDisplayGopDxe.efi` only after the bring-up gate passes;
+- connect the specific FPGA controller and confirm the HDMI child protocols;
+- run `SimpleDisplayGopTest.efi`; and
+- record empty EDID, mode, BLT, bounds, overlap, and guard-pixel results.
+
+### 3. Promote fixed mode candidates one at a time
+
+- the shared table already contains `640x480@60`, `800x600@60`,
+  `1024x768@60`, `1280x1024@60`, and `1920x1080@60` candidates copied from
+  `fpga_drm`;
+- GOP continues to expose only `1280x720@60` until each additional timing has
+  its own visible UEFI evidence; and
+- keep 30 Hz timing duplicates out of generic GOP because GOP mode information
+  cannot distinguish refresh rate.
+
+### 4. Recover the native Linux upload path in parallel
+
+Investigation order:
+
+1. reproduce a bounded transfer with the Xilinx reference XDMA driver;
+2. confirm descriptor-fetch/requester behavior and PCIe/AER status;
+3. compare current XDMA requester and streaming settings with the last
+   known-good export; and
+4. require completed descriptors plus ILA `TVALID && TREADY` handshakes before
+   calling H2C repaired.
+
+A separately validated direct-BAR upload backend in `fpga_drm` remains an
+alternative to H2C recovery.
+
+## Later gates
+
+- validate the remaining fixed resolutions, including maximum
+  `1920x1080@60` direct scanout;
+- prove firmware-console and bootloader selection separately from GOP protocol
+  existence;
+- implement early Linux firmware-framebuffer ownership and native DRM takeover;
+- add the hardware contract/version register;
+- add and validate the read-only PCI Expansion ROM path; and
+- run the full cold/warm reliability and recovery matrix.
+
+## Deferred Linux display work
+
+The CPU-backed KMS overlay milestone remains valid, including direct atomic
+commit, negative scaling/bounds tests, and a nonzero `cpu_compositions`
+counter. Compositor-friendly plane properties, Weston plane assignment, FPGA
+composition, and render-node work are deferred while GOP and native upload
+recovery are the active priorities.
+
+## Update rule
+
+After each completed step:
+
+1. record exact commands and evidence in the relevant test log;
+2. update this checklist and current-status section;
+3. update the corresponding package under `doc/development_work/`; and
+4. synchronize README and design documents when the validated behavior or
+   hardware contract changes.

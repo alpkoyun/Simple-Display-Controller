@@ -18,6 +18,11 @@ The expected hardware contract is:
 - EOP/TLAST is asserted once per line;
 - the FPGA stages one complete active-mode frame into the VDMA DDR ring.
 
+These bullets describe the intended native upload interface. On the current
+July 16 export, the XDMA requester remains busy with zero completed descriptors
+and emits no H2C `TVALID`; VDMA readiness and direct-BAR scanout are validated
+separately.
+
 ## Linux-Visible Resources
 
 | Resource | Acquired by | Notes |
@@ -75,43 +80,41 @@ only for other designs that expose the AXI-Lite aperture there.
 | Interrupt registers | MSI-X/MSI/legacy channel and user interrupt control. |
 | XDMA bypass BAR AXI-Lite window | Host writes to the FPGA video IP address map. |
 
-The current XDMA bypass configuration uses `0x3f000000` as its AXI translation
+The current XDMA bypass configuration uses `0x3c000000` as its AXI translation
 base. Low BAR offsets reach the control IPs as intended:
 
 | Resource | AXI address | Host BAR offset |
 |---|---:|---:|
-| Pixel unpack | `0x3f000000-0x3f00ffff` | `0x00000000-0x0000ffff` |
-| VTC | `0x3f010000-0x3f01ffff` | `0x00010000-0x0001ffff` |
-| AXI IIC | `0x3f020000-0x3f02ffff` | `0x00020000-0x0002ffff` |
-| AXI UART Lite | `0x3f030000-0x3f03ffff` | `0x00030000-0x0003ffff` |
-| AXI VDMA | `0x3f040000-0x3f04ffff` | `0x00040000-0x0004ffff` |
-| Color convert | `0x3f050000-0x3f05ffff` | `0x00050000-0x0005ffff` |
-| Video clock wizard | `0x3f060000-0x3f06ffff` | `0x00060000-0x0006ffff` |
-| Video lock GPIO | `0x3f070000-0x3f07ffff` | `0x00070000-0x0007ffff` |
-| DDR bypass slice | `0x3f800000-0x3fffffff` | `0x00800000-0x00ffffff` |
+| Pixel unpack | `0x3c000000-0x3c00ffff` | `0x00000000-0x0000ffff` |
+| VTC | `0x3c010000-0x3c01ffff` | `0x00010000-0x0001ffff` |
+| AXI IIC | `0x3c020000-0x3c02ffff` | `0x00020000-0x0002ffff` |
+| AXI UART Lite | `0x3c030000-0x3c03ffff` | `0x00030000-0x0003ffff` |
+| AXI VDMA | `0x3c040000-0x3c04ffff` | `0x00040000-0x0004ffff` |
+| Color convert | `0x3c050000-0x3c05ffff` | `0x00050000-0x0005ffff` |
+| Video clock wizard | `0x3c060000-0x3c06ffff` | `0x00060000-0x0006ffff` |
+| Video lock GPIO | `0x3c070000-0x3c07ffff` | `0x00070000-0x0007ffff` |
+| Shared DDR frame store | `0x3e000000-0x3fffffff` | `0x02000000-0x03ffffff` |
 
-The updated DDR row uses the non-aliased lower half of the BAR. ILA evidence
-from the previous export showed that XDMA combines its translation bits with
-the host offset rather than performing unrestricted arithmetic addition. With
-translation `0x3f000000`, offsets through `0x00ffffff` reproduce their intended
-AXI addresses. The BAR's upper half, `0x01000000-0x01ffffff`, aliases and is
-intentionally unused.
-
-The VDMA masters do not pass through this PCIe translation. Their independent
-1 GiB DDR address range remains `0x40000000-0x7fffffff`. Normal operation still
-programs four maximum-sized frame stores at `0x41000000-0x42fa6fff`; shrinking
-the bypass-visible slice does not reduce that ring.
+The 64 MiB BAR and translation are aligned, so every host offset from
+`0x00000000` through `0x03ffffff` is representable without aliasing. The first
+32 MiB contains the control region and unused space; the upper 32 MiB maps
+DDR3. The VDMA masters do not pass through the PCIe translation, but the
+current export gives them the same numeric DDR range,
+`0x3e000000-0x3fffffff`. Normal operation programs four maximum-sized frame
+stores at `0x3e000000-0x3ffa6fff`, leaving the final scratch page outside the
+ring.
 
 With `ddr_bypass_test=1 upload_enabled=0`, the driver temporarily programs
 VDMA with one frame, performs a bounded write/read/restore check, and writes a
-color-bar frame. The bypass master writes MIG offset zero at AXI `0x3f800000`;
-VDMA reaches the same offset at its own master address `0x40000000`. This
-diagnostic is off by default; normal Linux updates retain the four-frame ring
-and use XDMA H2C streaming.
+color-bar frame. Both the bypass master and VDMA use frame address
+`0x3e000000`. This diagnostic is off by default; normal Linux updates retain
+the four-frame ring and are intended to use XDMA H2C streaming. That H2C path
+is currently under recovery and must not be described as live-validated on this
+export.
 
 The generated export and live readback remain the authority. A future
-dedicated framebuffer BAR may provide a cleaner firmware contract, but equal
-numeric AXI addresses across the bypass and VDMA masters are not required.
+dedicated framebuffer BAR may provide a cleaner firmware contract, but the
+current shared address makes Linux and firmware programming less ambiguous.
 
 ## Not in Scope
 

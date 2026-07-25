@@ -35,7 +35,7 @@ uses the vendored XDMA core to transfer the committed framebuffer to the FPGA.
 | XDMA AXI-Lite bypass BAR | Required at probe for this hardware; `xdma_device_bypass_bar()` exposes it to the DRM side for video-IP registers. |
 | XDMA H2C AXI-stream engine | Used by `xdma_xfer_submit_lines_nowait()` with `write=true`, `line_size=active_width * 4`, and `line_count=active_height`. |
 | FPGA video path | VDMA S2MM captures H2C line packets into DDR frame buffers; VDMA MM2S feeds pixel unpack, color convert, and HDMI timing. |
-| Host video IP setup | Linux programs AXI VDMA at `0x3f040000`, reached through bypass BAR offset `0x00040000`. |
+| Host video IP setup | Linux programs AXI VDMA at `0x3c040000`, reached through bypass BAR offset `0x00040000`. |
 
 ## Main Files
 

@@ -2,19 +2,22 @@
 
 ## Current path and missing contracts
 
-The working Linux path is:
+The intended native Linux path is:
 
 ```text
 host XRGB8888 -> XDMA H2C stream -> VDMA S2MM -> DDR frame ring
 DDR -> VDMA MM2S -> pixel_unpack -> color_convert -> video out/VTC -> HDMI
 ```
 
-The host can program video registers through the current 32 MiB XDMA bypass
-BAR. The updated export maps an 8 MiB MIG segment into the BAR's non-aliased
-lower half. The strict static contract, live scratch save/write/read/restore,
-AXI ILA responses, and a `1280x720` bypass-frame scanout now pass. The current
-PCI function still has no Expansion ROM. See the
-[development record](../development_work/pcie_ddr_bypass_gop_prerequisite/README.md)
+The host can program video registers through the current 64 MiB XDMA bypass
+BAR. The updated export maps a 32 MiB MIG segment into the upper half and gives
+the bypass and VDMA masters the same `0x3e000000-0x3fffffff` DDR addresses.
+The strict static contract, live scratch test, and `1280x720@60` direct-BAR
+color-bar scanout pass on this export. The independent XDMA H2C Linux upload
+path currently stalls before asserting stream `TVALID`; four-frame H2C
+operation must be repaired separately. The current PCI function still has no
+Expansion ROM. See the
+[current development record](../development_work/shared_32m_ddr_gop_prerequisite/README.md)
 for the complete evidence and remaining maximum-resolution test.
 
 ## Target PCI resources
@@ -23,36 +26,44 @@ for the complete evidence and remaining maximum-resolution test.
 |---|---|---:|
 | Existing XDMA control BAR | Keep Linux XDMA engine access | Existing 64 KiB |
 | Register BAR/window | VDMA, VTC, clock, I2C, pixel-IP, and status MMIO | Less than 1 MiB is currently used |
-| Framebuffer BAR/window | Direct PCIe writes into one DDR scanout frame | 8 MiB |
+| Framebuffer BAR/window | Direct PCIe writes into the shared DDR frame ring | 32 MiB |
 | Expansion ROM BAR | Read-only UEFI Option ROM | Size after measuring the packaged ROM; likely 128-512 KiB |
 
-A 1920x1080 32-bit framebuffer needs 8,294,400 bytes. An 8 MiB binary window
-holds one such frame and leaves 94,208 bytes, including a reserved scratch
-page. The validated shared BAR2 is currently 64-bit and prefetchable, and this
-B85 host assigned it below 4 GiB. UEFI software must discover its actual base
-and must not assume that placement. If a future design introduces a dedicated
+A 1920x1080 32-bit framebuffer needs 8,294,400 bytes. Four maximum-sized
+frames plus three 4 KiB spacing gaps occupy `0x01fa7000` bytes, fitting in the
+32 MiB DDR window and leaving `0x00059000` bytes. The final 4 KiB is reserved
+for the scratch test. The shared BAR2 is 64-bit and prefetchable, and this B85
+host assigned it below 4 GiB. UEFI software must discover its actual base and
+must not assume that placement. If a future design introduces a dedicated
 framebuffer BAR, a 32-bit prefetchable BAR remains worth evaluating for older
 firmware compatibility.
 
-There are two Vivado realizations:
+There are two possible Vivado realizations:
 
-1. The implemented shared map keeps translation `0x3f000000`, control IPs at
-   `0x3f000000-0x3f07ffff`, and maps MIG at
-   `0x3f800000-0x3fffffff`. Only host offsets
-   `0x00000000-0x00ffffff` are used. VDMA independently maps the same MIG
-   offset zero at `0x40000000`.
+1. The implemented shared map uses translation `0x3c000000`, control IPs at
+   `0x3c000000-0x3c07ffff`, and maps MIG at
+   `0x3e000000-0x3fffffff`. Host offsets
+   `0x00000000-0x03ffffff` are non-aliased, and both VDMA masters use the same
+   numeric MIG range.
 2. A future separate framebuffer BAR remains the cleanest firmware contract
    if this 7-series XDMA configuration can expose it.
 
-Do not place a required segment in host offsets `0x01000000-0x01ffffff` with
-the current translation; ILA proved that those upper offsets alias. Equal AXI
-addresses across bypass and VDMA masters are not necessary, but both mappings
-must select the same physical MIG offsets.
+The earlier `0x3f000000` translation aliased half of a 32 MiB BAR. The current
+translation is aligned to the full 64 MiB aperture, so all offsets are uniquely
+representable. Both mappings must still select the same physical MIG bytes;
+the shared numeric address makes that contract explicit.
 
 Use the implemented shared map for the first Shell application and GOP driver;
-it has passed HWH, kernel, and ILA validation. Revisit a separate framebuffer
-BAR only if firmware compatibility, performance, or ownership testing exposes
-a concrete limitation.
+it has passed the static HWH check, kernel scratch/frame diagnostics, and a
+monitor-visible direct-BAR scanout test. Revisit a separate framebuffer BAR
+only if firmware compatibility, performance, or ownership testing exposes a
+concrete limitation. Do not make the first GOP milestone depend on the
+currently stalled XDMA H2C requester.
+
+The current `fpga_hardware/PCIe_wrapper/` export is maintained by hand while
+the design is changing. It is the working authority for these values. The
+tracked Vivado recreate/export source is synchronized after the hardware is
+finished and is required before a reproducible release.
 
 ## Framebuffer data path
 
@@ -131,13 +142,14 @@ compression, or evaluate a supported 7-series Tandem PROM flow.
    XDMA descriptors.
 4. VDMA scans the BAR-backed DDR frame continuously.
 5. Linux can read a valid Option ROM image from the PCI ROM resource.
-6. Existing H2C streaming and `fpga_drm` still work after the new BARs are
-   introduced.
+6. H2C streaming and native `fpga_drm` uploads work after the new BARs are
+   introduced. This gate currently fails on the July 16 export and is not a
+   prerequisite for the Shell/direct-GOP stages.
 
 ## References
 
 - [AMD PG195 PCIe BARs and Expansion ROM](https://docs.amd.com/r/en-US/pg195-pcie-dma/PCIe-BARs-Tab)
 - [AMD PCIe address translation alignment checks](https://docs.amd.com/r/en-US/pg194-axi-bridge-pcie-gen3/Addressing-Checks)
 - [AMD PG054 7-series PCIe configuration timing](https://docs.amd.com/r/en-US/pg054-7series-pcie/Configuration-Access-Specification-Requirements)
-- [Current Vivado recreation source](../../vivado_project/PCIe.tcl)
-- [Current hardware export](../../fpga_hardware/PCIe_wrapper/PCIe.hwh)
+- [Current hand-maintained hardware export](../../fpga_hardware/PCIe_wrapper/PCIe.hwh)
+- [Tracked Vivado recreate flow](../../vivado_project/README.md), to be synchronized after hardware freeze

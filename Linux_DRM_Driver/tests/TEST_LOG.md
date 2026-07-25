@@ -708,3 +708,84 @@ Conclusion: the remapped 8 MiB bypass slice is live-validated for CPU writes,
 the separate `0x40000000` VDMA view scans the written frame, and normal
 four-frame display operation remains intact. This hardware/driver baseline is
 ready for the GOP-specific software phase.
+
+## 2026-07-16: Paired-ILA Correction and Shared 32 MiB DDR Map
+
+The earlier conclusion above was too strong. The bypass scratch and frame
+writes completed with `OKAY` responses, but the displayed color bars were
+corrupted. Paired captures subsequently showed:
+
+```text
+bypass frame write: AXI/MIG 0x3f800000
+VDMA frame read:    AXI 0x40000000 -> MIG offset 0x00000000
+```
+
+The two masters were not selecting the same physical DDR bytes. Normal H2C
+uploads and VDMA reads remained healthy; the correction applies specifically
+to the claimed bypass-to-VDMA alias.
+
+The July 16 hardware export replaces that contract with:
+
+```text
+BAR2:                     64 MiB
+PCIe-to-bypass AXI base:  0x3c000000
+control AXI:              0x3c000000-0x3c07ffff
+bypass DDR:               0x3e000000-0x3fffffff (32 MiB)
+VDMA MM2S/S2MM DDR:       0x3e000000-0x3fffffff (32 MiB)
+BAR2 DDR offsets:         0x02000000-0x03ffffff
+normal four-frame ring:   0x3e000000-0x3ffa6fff
+scratch:                  AXI 0x3ffff000, BAR2+0x03fff000
+```
+
+The driver and strict HWH checker were updated to this shared numeric address
+map. `scripts/check_fpga_hardware_contract.py --require-ddr-bypass` passes,
+and the rebuilt module has repo `srcversion D270FDB2548287DBC83C505`.
+The rebuilt module was installed and the loaded and repository artifacts both
+reported `srcversion D270FDB2548287DBC83C505`. Live BAR2 enumeration reported a
+64 MiB 64-bit prefetchable resource. The module's non-destructive probe test
+then passed at:
+
+```text
+DDR bypass scratch test passed at AXI=0x3ffff000 BAR2+0x03fff000
+```
+
+With `ddr_bypass_test=1`, `upload_enabled=0`, and one VDMA frame, this command
+programmed the mode and direct-BAR color bars:
+
+```sh
+modetest -M fpga_drm -s 36@34:1280x720-60@XR24
+```
+
+The mode readback showed:
+
+```text
+VDMA S2MM first=0x3e000000 SR=0x00010000
+VDMA MM2S first=0x3e000000 SR=0x00011000
+VTC_ERR=0x00000000
+CLK_WIZ_STATUS=0x00000001
+DDR bypass pattern: 3,686,400 bytes at bypass_AXI=VDMA_AXI=0x3e000000
+```
+
+The user confirmed that the monitor changed to a correct color bar. This is
+the end-to-end acceptance result missing from the earlier 8 MiB design: the
+bypass writer and VDMA reader now address the same physical frame.
+
+The normal XDMA H2C path was tested separately with fbdev disabled so that one
+modeset produced one clean upload. VDMA configured four frames at
+`0x3e000000`, but the XDMA engine timed out with:
+
+```text
+0-H2C0-ST status: BUSY
+completed_desc_count=0
+async frame upload failed: err=-110 len=0
+```
+
+The XDMA stream ILA did not trigger on `TVALID=1` during the failed transfer.
+A separate immediate capture proved `TREADY=1` and `TVALID=0` with the stream
+interface reported as `Inactive` / `No Streams`. Therefore VDMA S2MM is ready
+and is not causing the timeout; the remaining fault is in the XDMA PCIe
+requester/descriptor-fetch path before any H2C stream reaches VDMA.
+
+Conclusion: the July 16 shared mapping and direct-BAR GOP prerequisite pass at
+`1280x720@60`. Normal Linux H2C uploads do not yet pass on this hardware export
+and must not be conflated with the direct framebuffer result.

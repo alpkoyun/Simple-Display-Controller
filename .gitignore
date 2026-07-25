@@ -8,6 +8,13 @@ tmp_ila_capture
 vivado_ip_docs
 *.o
 
+# Python helper-script bytecode.
+__pycache__/
+*.py[cod]
+
+# Reproducible UEFI builds keep EDK II and generated firmware artifacts here.
+/build/gop/
+
 # Kernel-module build products.
 *.ko
 *.mod

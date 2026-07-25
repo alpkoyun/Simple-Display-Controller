@@ -1,8 +1,10 @@
 # FPGA DRM Driver Architecture
 
 This repository builds a whitelist-mode Linux DRM/KMS driver for the FPGA PCIe
-HDMI design. The current driver looks like one normal KMS display to userspace
-while using XDMA H2C AXI-stream to deliver each rendered frame to the FPGA.
+HDMI design. The driver looks like one normal KMS display to userspace and is
+designed to use XDMA H2C AXI-stream to deliver each rendered frame to the FPGA.
+On the current July 16 export, that upload transport is blocked before stream
+`TVALID`; the separate direct-BAR GOP framebuffer path remains functional.
 
 ## Current Contract
 
@@ -19,7 +21,7 @@ while using XDMA H2C AXI-stream to deliver each rendered frame to the FPGA.
 - The FPGA stores incoming pixels in the VDMA DDR frame ring before video
   output.
 - Linux configures the FPGA video pipeline through the XDMA AXI-Lite bypass
-  BAR in this bitstream. VDMA programming targets AXI address `0x3f040000`,
+  BAR in this bitstream. VDMA programming targets AXI address `0x3c040000`,
   reached at bypass BAR offset `0x00040000`, using AXI VDMA register offsets
   rather than XDMA engine/config offsets.
 
@@ -55,11 +57,12 @@ Vivado ILA validation uses the matching
 contains the HDMI video-output ILA, so live frame-traffic validation uses the
 XDMA ILA at `PCIe_i/xdma_ila/inst/ila_lib`; after a `modetest -F smpte` upload,
 the ILA should show `tvalid && tready` handshakes, nonzero `tdata`, and more
-than one unique `tdata` value.
+than one unique `tdata` value. The current failure signature is no trigger on
+`TVALID=1`, with a separate capture showing `TREADY=1` and `TVALID=0`.
 
 ## Frame Upload Model
 
-The current upload path is asynchronous at frame granularity:
+The implemented upload path is asynchronous at frame granularity:
 
 1. Plane atomic checks validate the primary and optional overlay framebuffer
    state.

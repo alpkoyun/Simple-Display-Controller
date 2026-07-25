@@ -14,8 +14,10 @@ provides:
 
 The UEFI specification also requires a PCI graphics driver to follow the UEFI
 Driver Model. The driver binds to the PCI controller, creates a child handle
-for the physical output, reads the monitor's EDID, and installs GOP plus
-`EFI_EDID_DISCOVERED_PROTOCOL` and `EFI_EDID_ACTIVE_PROTOCOL` on that child.
+for the physical output, attempts to obtain EDID when the hardware supports it,
+and installs GOP plus `EFI_EDID_DISCOVERED_PROTOCOL` and
+`EFI_EDID_ACTIVE_PROTOCOL` on that child. This board setup has no usable EDID
+read path, so both EDID protocols report `SizeOfEdid=0` and `Edid=NULL`.
 
 GOP does not render 3D graphics. It exposes a scanout surface and block-copy
 operations, which matches this project's display-controller scope.
@@ -31,8 +33,8 @@ operations, which matches this project's display-controller scope.
    calls UEFI `LoadImage()`/`StartImage()`.
 6. The driver's entry point installs `EFI_DRIVER_BINDING_PROTOCOL`.
 7. `Supported()` accepts the FPGA PCI function.
-8. `Start()` opens `EFI_PCI_IO_PROTOCOL`, creates the HDMI child handle,
-   initializes device state, reads EDID, and installs GOP.
+8. `Start()` opens `EFI_PCI_IO_PROTOCOL`, creates the HDMI child handle, and
+   installs GOP plus empty EDID protocols without visibly changing the output.
 9. Firmware may add this GOP output to `ConOut` and draw setup/boot graphics.
 10. The OS loader uses the same GOP framebuffer.
 11. At `ExitBootServices()`, GOP calls end, but hardware keeps scanning the
@@ -74,7 +76,8 @@ GOP can display output only after:
 - the FPGA has configured;
 - the PCIe endpoint is visible;
 - PCI resources and the Expansion ROM are enumerated; and
-- the UEFI driver has started and selected a mode.
+- the UEFI driver has started and firmware or an application has selected a
+  mode.
 
 It cannot show the motherboard's very earliest reset/SEC/PEI messages. AMD's
 7-series PCIe documentation emphasizes that a boot-visible endpoint must be
@@ -91,4 +94,3 @@ configuration-time warning.
 - [EDK II Driver Writer's Guide, PCI Option ROM](https://tianocore-docs.github.io/edk2-UefiDriverWritersGuide/draft/32_distributing_uefi_drivers/321_pci_option_rom.html)
 - [AMD PG054 configuration access timing](https://docs.amd.com/r/en-US/pg054-7series-pcie/Configuration-Access-Specification-Requirements)
 - [AMD PG054 FPGA configuration-time calculation](https://docs.amd.com/r/en-US/pg054-7series-pcie/FPGA-Configuration-Times-for-7-Series-Devices)
-
