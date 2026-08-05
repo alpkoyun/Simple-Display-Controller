@@ -24,11 +24,12 @@ be ready before firmware enumerates the bus.
 
 ## Recommended architecture
 
-Add a host-visible linear framebuffer aperture into FPGA DDR and expose it
-through a PCI BAR. Write an EDK II UEFI driver that reports that aperture as
-the GOP framebuffer and programs the existing VDMA, VTC, clock, pixel, HDMI,
-and I2C blocks. Package the driver as a UEFI PCI Option ROM and serve that ROM
-from FPGA BRAM through the XDMA Expansion ROM interface.
+Retain the host-visible framebuffer storage in FPGA DDR behind PCI BAR2, but do
+not report it as a linear GOP framebuffer. Write an EDK II driver that reports
+`PixelBltOnly`, reaches the storage through explicit 32-bit PCI I/O operations,
+and programs the existing VDMA, VTC, clock, pixel, HDMI, and I2C blocks.
+Package the driver as a UEFI PCI Option ROM and serve that ROM from FPGA BRAM
+through the XDMA Expansion ROM interface.
 
 ```mermaid
 flowchart LR
@@ -37,17 +38,18 @@ flowchart LR
     PCIE --> ROM[Expansion ROM BAR\nUEFI GOP driver]
     ROM --> UEFI[Motherboard UEFI DXE]
     UEFI --> GOP[GOP + EDID protocols]
-    GOP --> FB[PCI BAR framebuffer\nXRGB8888 in FPGA DDR]
+    GOP --> BLT[GOP Blt\n32-bit PCI I/O]
+    BLT --> FB[BAR2 storage\nXRGB8888 in FPGA DDR]
     FB --> VDMA[VDMA MM2S]
     VDMA --> HDMI[Video pipeline + HDMI]
     UEFI --> BOOT[Bootloader / early OS]
-    BOOT --> DRM[Linux simpledrm then fpga_drm]
+    BOOT --> DRM[Linux fpga_drm takeover]
 ```
 
-The direct BAR framebuffer is preferred over reproducing the Linux XDMA
-streaming driver inside UEFI. It gives GOP consumers the linear
-`FrameBufferBase` they expect, avoids bus-master DMA in the first driver, and
-provides a normal firmware-framebuffer handoff to the OS.
+The direct BAR storage is preferred over reproducing the Linux XDMA streaming
+driver inside UEFI. The validated GOP `Blt()` path avoids bus-master DMA while
+also preventing generic firmware-framebuffer drivers from issuing unsafe
+ordinary CPU accesses to this PCI window.
 
 ## Current project findings
 

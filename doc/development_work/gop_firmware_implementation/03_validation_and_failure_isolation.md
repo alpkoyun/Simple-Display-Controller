@@ -61,21 +61,26 @@ on the FPGA HDMI monitor. A printed pass without visible output is not enough.
 
 ### Shell-loaded GOP driver
 
-The initial workflow is:
+The initial workflow isolates image loading, Driver Binding `Start()`, and GOP
+use as three separate steps:
 
 ```text
-load fs0:\EFI\SimpleDisplay\SimpleDisplayGopDxe.efi
-connect -r
-drivers
-devices
-dh -p GraphicsOutput
+load -nc fs0:\EFI\SimpleDisplay\SimpleDisplayGopDxe.efi
+drivers >a fs0:\EFI\SimpleDisplay\evidence\drivers-loaded.txt
+devices >a fs0:\EFI\SimpleDisplay\evidence\devices-before-connect.txt
+connect <fpga-controller-handle> <simple-display-driver-handle>
+drivers >a fs0:\EFI\SimpleDisplay\evidence\drivers-bound.txt
+devices >a fs0:\EFI\SimpleDisplay\evidence\devices-after-connect.txt
+dh -p GraphicsOutput >a fs0:\EFI\SimpleDisplay\evidence\graphics-output-handles.txt
 fs0:\EFI\SimpleDisplay\SimpleDisplayGopTest.efi
 ```
 
 Record actual controller/child handles from the test machine rather than
-hard-coding examples into scripts. Prefer connecting the specific FPGA
-controller during early debugging; use recursive connect only after binding is
-understood.
+hard-coding examples into scripts. Load exactly one driver image and connect
+only the specific FPGA controller and SimpleDisplay driver, without `-r`.
+Plain `load` performs a recursive connect-all operation in the TianoCore Shell
+and can cause a Graphics Console consumer to call `SetMode()` immediately,
+which does not isolate Driver Binding `Start()`.
 
 The GOP test application must verify:
 
@@ -147,8 +152,8 @@ policy executed it.
 | Frame writes read back but no HDMI image | Clock, VTC, VDMA MM2S, HDMI I2C, or monitor | Status registers in initialization order; capture video-stream ILA last. |
 | Pattern app works but DXE driver will not bind | UEFI Driver Binding/child-handle ownership | `Supported()` status, protocol open information, `drivers`, and `devices`. |
 | GOP handle exists but firmware console stays on iGPU | `ConOut`/primary-display policy | `dh -p GraphicsOutput`, console variables, and setup policy; do not change the framebuffer path. |
-| GOP works but BLT test corrupts edges | Rectangle, delta, overlap, or overflow logic | GOP test vectors and guard pixels; use `FrameBufferBltLib`. |
-| GOP works before boot but Linux is blank/conflicted | Firmware-framebuffer handoff or DRM aperture ownership | Early kernel log, sysfb/simpledrm creation, and `fpga_drm` probe order. |
+| GOP works but BLT test corrupts edges | Rectangle, delta, overlap, overflow, or PCI access-width logic | GOP test vectors and guard pixels; require explicit 32-bit PCI I/O. |
+| GOP works before boot but Linux hangs | A linear GOP framebuffer lets `simpledrm` issue unsupported ordinary CPU accesses | Require `PixelBltOnly`, zero framebuffer base/size, a normal boot without initcall blacklists, then native `fpga_drm` takeover. |
 | `fpga_drm` modeset succeeds but native upload times out | XDMA requester/descriptor fetch before VDMA S2MM | XDMA engine completed-descriptor count, PCI requester/AER status, then H2C ILA `TVALID`/`TREADY`. Current signature is `BUSY`, count zero, `TREADY=1`, `TVALID=0`. |
 | Shell driver works but Option ROM does not | ROM packaging, Expansion ROM read path, or firmware policy | ROM hash/headers first, execution policy second. |
 | Warm boots pass but cold boots miss the device | FPGA configuration timing | SPI image, compression/config clock, and repeated AC-power results. |
@@ -163,7 +168,7 @@ policy executed it.
 | Fixed-mode GOP and BLT | No | Enter UEFI Shell | GOP handle, empty EDID protocols, and complete test-app pass |
 | Expanded fixed mode table | No | Enter UEFI Shell | Per-mode timing and visible-output passes |
 | Firmware console/bootloader | Usually no | Warm reboot may help | Visible consumer using FPGA GOP |
-| Linux handoff | Linux driver and possibly FPGA H2C change | Yes | GOP -> early framebuffer -> working native DRM; currently blocked by H2C |
+| Linux handoff | GOP metadata plus Linux driver ownership | Yes | BLT-only GOP -> no FPGA `simpledrm` binding -> working native `fpga_drm` |
 | Expansion ROM/version register | Yes | FPGA/SPI rebuild and cold boot | ROM hash match and automatic GOP |
 | Reliability release gate | No further design change | Many cold/warm boots | Complete boot matrix without unexplained failure |
 

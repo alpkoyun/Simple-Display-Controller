@@ -71,33 +71,38 @@ EFI_EDID_ACTIVE_PROTOCOL:     SizeOfEdid=0, Edid=NULL
 ```
 
 GOP modes come from a fixed table whose timings are shared with or checked
-against `fpga_drm`. The initial implementation advertises only the proven
-`1280x720@60` development mode. Conservative `800x600@60` and `640x480@60`
-timings are already present in the candidate table, but they and the remaining
-Linux-whitelist resolutions are advertised only after visible UEFI validation.
+against `fpga_drm`. The initial accepted implementation advertised only
+`1280x720@60`; the current replacement candidate promotes `1920x1080@60` to
+mode 0 while keeping `MaxMode=1`. Conservative `800x600@60` and `640x480@60`
+timings remain in the candidate table, but they and the remaining
+Linux-whitelist resolutions are not advertised without visible UEFI
+validation.
 
 Because `EFI_GRAPHICS_OUTPUT_MODE_INFORMATION` has no refresh-rate field, do
 not publish both 30 Hz and 60 Hz entries for the same resolution unless a
 separate documented policy makes the timing choice unambiguous.
 
-## First validated timing
+## Current default timing
 
-The first firmware mode is the live-validated `1280x720@60` timing:
+The replacement firmware mode is `1920x1080@60`; its deployment remains gated
+on the same visible UEFI and persistent cold-boot evidence as the accepted
+1280x720 baseline:
 
 | Item | Value |
 |---|---:|
-| Pixel clock | 74,250 kHz |
-| Horizontal active | 1280 |
-| Horizontal sync start/end/total | 1390 / 1430 / 1650 |
-| Vertical active | 720 |
-| Vertical sync start/end/total | 725 / 730 / 750 |
+| Pixel clock | 148,500 kHz |
+| Horizontal active | 1920 |
+| Horizontal sync start/end/total | 2008 / 2052 / 2200 |
+| Vertical active | 1080 |
+| Vertical sync start/end/total | 1084 / 1089 / 1125 |
 | Sync polarity | Positive HSync, positive VSync |
 | Bytes per pixel | 4 |
-| Bytes per line | 5120 (`0x1400`) |
-| Active frame bytes | 3,686,400 (`0x00384000`) |
-| Pixel format | `PixelBlueGreenRedReserved8BitPerColor` |
-| Pixels per scan line | 1280 |
-| Clock-wizard readback used in Linux validation | `CFG0=0x007d250a`, `CFG2=0x0000000a`, lock/status `0x1` |
+| Bytes per line | 7680 (`0x1e00`) |
+| Active frame bytes | 8,294,400 (`0x007e9000`) |
+| GOP pixel format | `PixelBltOnly` |
+| Physical storage layout | XRGB8888-compatible 32-bit pixels |
+| Pixels per scan line | 1920 |
+| Clock-wizard configuration | `CFG0=0x007d250a`, `CFG2=0x00000005` |
 
 On little-endian x86, the GOP pixel bytes are blue, green, red, reserved. This
 matches the project's DRM `XRGB8888` memory layout.
@@ -107,9 +112,12 @@ matches the project's DRM `XRGB8888` memory layout.
 Firmware publishes:
 
 ```text
-FrameBufferBase = discovered BAR2 physical base + 0x02000000
-FrameBufferSize = 0x00384000
+FrameBufferBase = 0
+FrameBufferSize = 0
 ```
+
+The driver retains BAR2+`0x02000000` internally and reaches it only through
+explicit 32-bit PCI I/O operations in `GOP.Blt()`.
 
 VDMA uses the same numeric DDR address as the bypass master:
 

@@ -67,19 +67,22 @@ finished and is required before a reproducible release.
 
 ## Framebuffer data path
 
-The framebuffer BAR must route PCI writes to the same DDR address scanned by
-VDMA MM2S. GOP mode metadata should report:
+The framebuffer BAR routes PCI writes to the same DDR address scanned by VDMA
+MM2S. Hardware tests proved that ordinary CPU loads/stores to this PCI window
+are not reliable, while explicit 32-bit PCI I/O transactions are reliable.
+The current GOP therefore reports:
 
 ```text
-FrameBufferBase = host physical address of framebuffer BAR + framebuffer offset
-FrameBufferSize = PixelsPerScanLine * VerticalResolution * 4
-PixelFormat     = PixelBlueGreenRedReserved8BitPerColor
+FrameBufferBase = 0
+FrameBufferSize = 0
+PixelFormat     = PixelBltOnly
 ```
 
-On little-endian x86, that GOP format is byte-compatible with DRM
-`XRGB8888`: bytes are blue, green, red, reserved. The existing FPGA ignores
-the reserved/X byte, so the Linux and firmware paths can share the pixel
-contract.
+Firmware consumers render through `GOP.Blt()`. The driver converts the
+standard blue/green/red/reserved BLT pixel buffer into ordered 32-bit PCI I/O
+reads and writes at BAR2+`0x02000000`. The underlying storage remains
+XRGB8888-compatible for the native Linux driver, but it is not published as a
+linear UEFI framebuffer and must not be inherited by `simpledrm`.
 
 Initially dedicate frame store 0 to GOP. VDMA MM2S should park on it. The Linux
 driver may reinitialize all four frame stores after takeover.

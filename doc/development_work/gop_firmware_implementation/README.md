@@ -1,7 +1,7 @@
 # GOP Firmware Implementation
 
-Status: **Stages 0-2 source implemented and host-built; UEFI Shell hardware
-validation pending**
+Status: **PixelBltOnly 1280x720 baseline accepted; 1920x1080@60 default
+candidate implemented and awaiting replacement-image hardware validation**
 
 This package converts the completed PCIe DDR-bypass milestone into an
 executable UEFI/GOP development sequence. The plan deliberately separates four
@@ -16,9 +16,9 @@ questions that otherwise fail together and are difficult to diagnose:
 
 Do **not** change the direct-BAR framebuffer contract or begin with the Option
 ROM. The next executable artifact should be a verbose X64 UEFI Shell
-application named `SimpleDisplayBringup.efi`. It will use the already
-validated BAR2 contract to
-initialize one `1280x720@60` mode and fill the framebuffer. The application can
+application named `SimpleDisplayBringup.efi`. It uses the already validated
+BAR2 contract to initialize the single currently exposed mode and fill the
+framebuffer. The current source selects `1920x1080@60`. The application can
 print every result to the existing firmware console, making BAR discovery,
 register access, clock/VDMA status, and HDMI failures observable.
 
@@ -36,8 +36,11 @@ application and obtain visible FPGA output before loading the DXE driver on
 hardware. Package an Option ROM only after the Shell-loaded driver is
 repeatable.
 
-`1280x720@60` is the first mode because that exact bypass-frame and VDMA setup
-has already passed the Linux diagnostic. The HDMI device on this board does not
+The first hardware checkpoint used `1280x720@60` because that exact bypass
+frame and VDMA setup had already passed the Linux diagnostic. After the
+PixelBltOnly persistent handoff passed and Linux subsequently completed
+`1920x1080@60` scanout, the current source promotes 1080p60 to mode 0. The HDMI
+device on this board does not
 provide a usable, publicly documented EDID/DDC read interface for this setup,
 so the firmware does not attempt EDID acquisition. The GOP driver installs
 EDID Discovered and EDID Active protocol instances with `SizeOfEdid=0` and
@@ -48,8 +51,8 @@ driver and individually validated in UEFI.
 
 - `firmware/uefi/SimpleDisplayPkg` pins the PCI/BAR/register contract and six
   Linux-matched 60 Hz timing candidates.
-- GOP initially exposes only the proven `1280x720@60` mode. Promote the other
-  fixed candidates only after their visible UEFI tests pass.
+- GOP exposes exactly one mode, currently `1920x1080@60`. Retain the other fixed
+  candidates without advertising them until each has visible UEFI evidence.
 - `SimpleDisplayBringup.efi` enumerates PCI handles, validates BAR2, performs a
   destructive-test-with-restore on the scratch page, programs MM2S-only
   scanout, fills color bars, and prints bounded status checkpoints.

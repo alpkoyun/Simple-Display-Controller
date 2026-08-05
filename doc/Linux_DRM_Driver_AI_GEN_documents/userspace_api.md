@@ -50,6 +50,9 @@ Supported connector modes:
 | `1920x1080@60` | `148.500 MHz` |
 | `1920x1080@30` | `74.250 MHz` |
 
+`1920x1080@60` is the sole preferred connector mode. The remaining entries stay
+available for explicit KMS or desktop selection.
+
 Userspace switches resolution through normal KMS modesets. On enable/modeset,
 the driver stops outstanding uploads, programs the video clock wizard, VTC, and
 VDMA for the selected mode, and resumes active-size frame uploads.
@@ -75,8 +78,9 @@ sudo modprobe fpga_drm \
   enable_fbdev=1
 ```
 
-With those parameters, GDM/Xorg has been observed to pick up `/dev/dri/card0`,
-set `1280x720@60`, and display the desktop through the FPGA output. In that
+With those parameters, GDM/Xorg was previously observed to pick up
+`/dev/dri/card0`, set the then-preferred `1280x720@60`, and display the desktop
+through the FPGA output. The current source prefers `1920x1080@60`. In that
 desktop state the primary plane is active, but the overlay plane may remain
 unused by the compositor. That means the driver is doing KMS scanout and XDMA
 frame upload, but not necessarily exercising the CPU overlay-composition path.

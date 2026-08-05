@@ -101,15 +101,18 @@ fs0:\EFI\SimpleDisplay\SimpleDisplayGopDxe.efi
 From UEFI Shell, the intended workflow is:
 
 ```text
-load fs0:\EFI\SimpleDisplay\SimpleDisplayGopDxe.efi
-connect -r
+load -nc fs0:\EFI\SimpleDisplay\SimpleDisplayGopDxe.efi
 drivers
 devices
+connect <fpga-controller-handle> <simple-display-driver-handle>
 dh -p GraphicsOutput
 ```
 
 Exact Shell device names and command options must be recorded from the actual
-firmware. Serial/debug output should identify `Supported()`, `Start()`, BAR
+firmware, and boot-local handles must not be reused. Load the image exactly
+once, then use a targeted non-recursive connection to isolate Driver Binding
+`Start()` from firmware Graphics Console consumers. Serial/debug output should
+identify `Supported()`, `Start()`, BAR
 discovery, empty EDID protocol installation, `SetMode()`, and GOP installation.
 
 The detailed execution and evidence gates are in the

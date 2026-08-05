@@ -24,6 +24,18 @@ EXPECTED_BYPASS_RANGES = {
 
 EXPECTED_VDMA_DDR_RANGE = (0x3E000000, 0x3FFFFFFF)
 
+ROM_CONTRACT = {
+    "size": 0x8000,
+    "mem": "simple_display_gop_option_rom_32.mem",
+    "aperture_encoding": "0x008",
+}
+
+EXPECTED_IDENTITY_PARAMETERS = {
+    "ABI_MAGIC": 0x31434453,
+    "ABI_VERSION": 0x00010000,
+    "ABI_FEATURES": 0x00000003,
+}
+
 EXPECTED_XDMA_PARAMETERS = {
     "AXIST_BYPASS_APERTURE_SIZE": "0x13",
     "AXIST_BYPASS_CONTROL": "0x5",
@@ -82,16 +94,23 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--expansion-rom-stage",
-        choices=("off", "transport", "efi"),
-        default="off",
-        help="expected Expansion ROM/SDC1 ABI state in the HWH",
+        "--clean-baseline",
+        action="store_true",
+        help="validate the pre-integration 64 MiB display HWH",
     )
     return parser.parse_args()
 
 
 def integer(attribute: str) -> int:
     return int(attribute, 0)
+
+
+def parameter_integer(value: str) -> int:
+    """Parse decimal/hex or Vivado's unprefixed binary HWH parameters."""
+    normalized = value.strip('"')
+    if len(normalized) >= 8 and set(normalized) <= {"0", "1"}:
+        return int(normalized, 2)
+    return integer(normalized)
 
 
 def canonical_instance(name: str) -> str:
@@ -101,7 +120,7 @@ def canonical_instance(name: str) -> str:
     return name
 
 
-def check_hwh(path: Path, expansion_rom_stage: str) -> list[str]:
+def check_hwh(path: Path, clean_baseline: bool) -> list[str]:
     root = ET.parse(path).getroot()
     errors: list[str] = []
     ranges = list(root.iter("MEMRANGE"))
@@ -127,16 +146,20 @@ def check_hwh(path: Path, expansion_rom_stage: str) -> list[str]:
                 f"{instance}: expected {expected}, got {actual}"
             )
 
-    if expansion_rom_stage != "off":
-        rom_size = 0x1000 if expansion_rom_stage == "transport" else 0x8000
+    if not clean_baseline:
+        rom_size = int(ROM_CONTRACT["size"])
         extra_ranges = {
             "expansion_rom": (
                 "REGISTER",
                 0x01000000,
                 0x01000000 + rom_size - 1,
             ),
-            "identity_regs": ("REGISTER", 0x3C080000, 0x3C08FFFF),
         }
+        extra_ranges["identity_regs"] = (
+            "REGISTER",
+            0x3C080000,
+            0x3C08FFFF,
+        )
         for instance, (memtype, base, high) in extra_ranges.items():
             item = bypass.get(instance)
             if item is None:
@@ -159,11 +182,7 @@ def check_hwh(path: Path, expansion_rom_stage: str) -> list[str]:
             for module in root.iter("MODULE")
         }
         rom_parameters = module_parameters.get("expansion_rom", {})
-        expected_mem = (
-            "simple_display_transport_rom_32.mem"
-            if expansion_rom_stage == "transport"
-            else "simple_display_gop_option_rom_32.mem"
-        )
+        expected_mem = str(ROM_CONTRACT["mem"])
         if rom_parameters.get("ROM_BYTES") != str(rom_size):
             errors.append(
                 "expansion_rom ROM_BYTES: "
@@ -176,22 +195,22 @@ def check_hwh(path: Path, expansion_rom_stage: str) -> list[str]:
                 f"{rom_parameters.get('ROM_INIT_FILE')}"
             )
 
-        identity_parameters = module_parameters.get("identity_regs", {})
-        aperture_value = identity_parameters.get("ROM_APERTURE_BYTES", "")
-        try:
-            normalized_aperture = aperture_value.strip('"')
-            identity_aperture = (
-                int(normalized_aperture, 2)
-                if set(normalized_aperture) <= {"0", "1"}
-                else integer(normalized_aperture)
-            )
-        except ValueError:
-            identity_aperture = -1
-        if identity_aperture != rom_size:
-            errors.append(
-                "identity_regs ROM_APERTURE_BYTES: "
-                f"expected {rom_size}, got {aperture_value}"
-            )
+        identity_parameters = module_parameters.get("identity_regs") or {}
+        expected_identity = {
+            **EXPECTED_IDENTITY_PARAMETERS,
+            "ROM_APERTURE_BYTES": rom_size,
+        }
+        for name, expected in expected_identity.items():
+            value = identity_parameters.get(name, "")
+            try:
+                actual = parameter_integer(value)
+            except ValueError:
+                actual = -1
+            if actual != expected:
+                errors.append(
+                    f"identity_regs {name}: expected 0x{expected:08x}, "
+                    f"got {value}"
+                )
 
     for master in ("M_AXI_MM2S", "M_AXI_S2MM"):
         matches = [
@@ -229,17 +248,15 @@ def check_hwh(path: Path, expansion_rom_stage: str) -> list[str]:
             actual = parameters.get(name)
             if actual != expected:
                 errors.append(f"xdma_0 {name}: expected {expected}, got {actual}")
-        rom_enabled = "FALSE" if expansion_rom_stage == "off" else "TRUE"
+        rom_enabled = "FALSE" if clean_baseline else "TRUE"
         if parameters.get("PF0_EXPANSION_ROM_ENABLE") != rom_enabled:
             errors.append(
                 "xdma_0 PF0_EXPANSION_ROM_ENABLE: "
                 f"expected {rom_enabled}, got "
                 f"{parameters.get('PF0_EXPANSION_ROM_ENABLE')}"
             )
-        if expansion_rom_stage != "off":
-            expected_aperture = (
-                "0x005" if expansion_rom_stage == "transport" else "0x008"
-            )
+        if not clean_baseline:
+            expected_aperture = str(ROM_CONTRACT["aperture_encoding"])
             if parameters.get("PF0_EXPANSION_ROM_APERTURE_SIZE") != expected_aperture:
                 errors.append(
                     "xdma_0 PF0_EXPANSION_ROM_APERTURE_SIZE: "
@@ -338,7 +355,7 @@ def main() -> int:
 
     if inputs_exist:
         try:
-            errors.extend(check_hwh(args.hwh, args.expansion_rom_stage))
+            errors.extend(check_hwh(args.hwh, args.clean_baseline))
             errors.extend(check_driver(args.driver))
         except (ET.ParseError, OSError, ValueError) as error:
             errors.append(str(error))
@@ -350,7 +367,8 @@ def main() -> int:
         return 1
 
     print(f"hardware contract: PASS for normal H2C display ({args.hwh})")
-    print(f"  Expansion ROM stage             {args.expansion_rom_stage}")
+    configuration = "clean pre-integration baseline" if args.clean_baseline else "fixed 32 KiB EFI/GOP"
+    print(f"  Hardware configuration          {configuration}")
     for instance, (_, base, high) in EXPECTED_BYPASS_RANGES.items():
         print(f"  {instance:30s} 0x{base:08x}-0x{high:08x}")
     print("  VDMA DDR masters               0x3e000000-0x3fffffff")
@@ -362,8 +380,8 @@ def main() -> int:
     print("  GOP VDMA scanout                0x3e000000-0x3e7e8fff")
     print("  DDR scratch page                0x3ffff000 (host+0x03fff000)")
     print("  fpga_drm four-frame ring        0x3e000000-0x3ffa6fff")
-    if args.expansion_rom_stage != "off":
-        rom_size = 0x1000 if args.expansion_rom_stage == "transport" else 0x8000
+    if not args.clean_baseline:
+        rom_size = int(ROM_CONTRACT["size"])
         print(
             "  Expansion ROM AXI destination   "
             f"0x01000000-0x{0x01000000 + rom_size - 1:08x}"

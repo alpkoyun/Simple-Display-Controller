@@ -103,23 +103,18 @@ hardware-contract generator can emit C tables for both environments from one
 data file; until then, add a cross-check test that compares the UEFI and DRM
 mode names, active sizes, clocks, porches, sync widths, and polarities.
 
-## Alternative: GOP on today's streaming hardware
+## BLT-only contract on the current PCI framebuffer
 
-A proof-of-concept could report `PixelBltOnly`, maintain a shadow framebuffer
-in UEFI memory, and port enough XDMA descriptor/polling logic to upload the
-shadow image after each `Blt()`. UEFI's PCI I/O `Map()` service would be
-required for every DMA-visible host buffer.
+The implemented driver reports `PixelBltOnly`, `FrameBufferBase=0`, and
+`FrameBufferSize=0`. It does not need a shadow framebuffer or XDMA descriptors:
+each GOP operation uses explicit 32-bit `EFI_PCI_IO_PROTOCOL.Mem.Read/Write`
+transactions against the existing BAR2-backed DDR storage. This preserves the
+validated firmware rendering path without inviting firmware or an early OS
+driver to use unreliable ordinary CPU framebuffer accesses.
 
-This is not the recommended product path because it:
-
-- ports a large and security-sensitive DMA engine into firmware;
-- can require full-frame uploads for small text changes;
-- provides no direct `FrameBufferBase` for early OS handoff;
-- complicates IOMMU/mapping and timeout behavior; and
-- duplicates the Linux transport rather than presenting a simple display BAR.
-
-Use it only if a quick Shell-loaded GOP experiment is worth more than the
-engineering cost of the framebuffer BAR.
+The native Linux `fpga_drm` driver remains responsible for taking ownership
+after boot. The generic `simpledrm` path must not bind this FPGA GOP because no
+linear framebuffer is advertised.
 
 ## Linux handoff
 

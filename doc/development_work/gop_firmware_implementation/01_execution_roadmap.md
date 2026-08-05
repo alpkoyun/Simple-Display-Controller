@@ -126,28 +126,32 @@ Implement `SimpleDisplayGopDxe` using the UEFI Driver Model:
 The HDMI device cannot provide EDID in this setup. Install both EDID protocol
 instances with `SizeOfEdid=0` and `Edid=NULL`; do not invent monitor data. Use a
 fixed mode table built from the exact timings already supported by `fpga_drm`.
-The first build advertises only the validated `1280x720@60` development mode.
-It also carries `800x600@60` and `640x480@60` in the shared candidate table,
-but does not advertise either until its UEFI scanout test passes.
+The first hardware build advertised only the validated `1280x720@60`
+development mode. The current replacement candidate still advertises exactly
+one mode, but promotes `1920x1080@60` to mode 0 after the accepted PixelBltOnly
+handoff and successful Linux 1080p60 scanout. The remaining timings stay in the
+shared candidate table and are not advertised.
 
-For the first validated `1280x720@60` timing:
+For the current `1920x1080@60` default candidate:
 
 ```text
-PixelFormat       = PixelBlueGreenRedReserved8BitPerColor
-PixelsPerScanLine = 1280
-FrameBufferBase   = BAR2 physical base + 0x02000000
-FrameBufferSize   = 0x00384000
+PixelFormat       = PixelBltOnly
+PixelsPerScanLine = 1920
+FrameBufferBase   = 0
+FrameBufferSize   = 0
 ```
 
 Implement `QueryMode()`, `SetMode()`, and all four required `Blt()` operations.
-Use EDK II `FrameBufferBltLib` rather than custom rectangle-copy code.
+Use explicit 32-bit `EFI_PCI_IO_PROTOCOL.Mem.Read/Write` transactions for all
+framebuffer operations; ordinary CPU accesses and `FrameBufferBltLib` are not
+valid for this PCI window.
 All visible pipeline programming belongs in `SetMode()` or the explicit Shell
 bring-up application; Driver Binding `Start()` must not visibly change the
 display.
 
 Gate:
 
-- `load SimpleDisplayGopDxe.efi` succeeds from UEFI Shell;
+- `load -nc SimpleDisplayGopDxe.efi` succeeds from UEFI Shell;
 - connecting the FPGA controller creates one GOP handle;
 - `dh -p GraphicsOutput` finds the FPGA output;
 - the HDMI child has EDID Discovered and EDID Active with zero-length data;
@@ -164,11 +168,12 @@ Keep the mode policy independent of monitor discovery:
 - retain the zero-length EDID protocol instances;
 - expose only exact timing profiles copied or generated from the Linux
   whitelist;
-- retain `1280x720@60` as the known development default;
+- retain `1280x720@60` as the known fallback candidate while validating
+  `1920x1080@60` as the new development default;
 - validate `640x480@60` and `800x600@60` as conservative plug-in-display
   modes; and
-- add `1024x768@60`, `1280x1024@60`, and `1920x1080@60` only after each mode
-  passes firmware-visible scanout.
+- add `1024x768@60` and `1280x1024@60` only after each mode passes
+  firmware-visible scanout.
 
 GOP mode information does not report refresh rate. Keep the Linux 30 Hz
 profiles in the shared timing source, but do not expose indistinguishable 30 Hz

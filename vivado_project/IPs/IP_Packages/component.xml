@@ -316,11 +316,6 @@
         <spirit:userFileType>CHECKSUM_0f8a2b54</spirit:userFileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
-      <spirit:file>
-        <spirit:name>../frame_counter/frame_counter.srcs/sources_1/new/frame_counter.v</spirit:name>
-        <spirit:fileType>verilogSource</spirit:fileType>
-        <spirit:userFileType>CHECKSUM_0dc29900</spirit:userFileType>
-      </spirit:file>
     </spirit:fileSet>
     <spirit:fileSet>
       <spirit:name>xilinx_anylanguagebehavioralsimulation_view_fileset</spirit:name>
@@ -328,10 +323,6 @@
         <spirit:name>src/frame_counter.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
-      </spirit:file>
-      <spirit:file>
-        <spirit:name>../frame_counter/frame_counter.srcs/sources_1/new/frame_counter.v</spirit:name>
-        <spirit:fileType>verilogSource</spirit:fileType>
       </spirit:file>
     </spirit:fileSet>
     <spirit:fileSet>

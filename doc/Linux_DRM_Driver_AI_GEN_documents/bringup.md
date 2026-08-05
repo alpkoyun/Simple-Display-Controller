@@ -130,6 +130,9 @@ The FPGA should appear as a DRM card with these connector modes:
 | `1920x1080@60` | `148.500 MHz` |
 | `1920x1080@30` | `74.250 MHz` |
 
+The source marks `1920x1080@60` as the sole preferred mode. Object IDs remain
+runtime-specific and must still be rediscovered before direct KMS commands.
+
 If the desktop stack does not list it, verify that the FPGA PCIe function
 enumerates as a display-class device and that `fpga_drm.ko` owns the PCI
 function.

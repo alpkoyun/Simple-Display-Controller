@@ -16,7 +16,7 @@ In this architecture, XDMA acts as the bus master for frame transfers. The host 
 
 # Current Status of the Project
 ## Linux DRM Driver
-The current `fpga_drm.ko` driver is a DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes explicit KMS objects for one CRTC, one primary plane, one virtual encoder, and one virtual connector, advertises common 30 Hz and 60 Hz modes up to a `148.5 MHz` pixel clock, and accepts linear `XRGB8888` framebuffers. Userspace changes resolution with normal KMS modesets; the driver then reprograms the video clock wizard, VTC, and VDMA for the selected mode through the XDMA bypass BAR. Its XDMA H2C upload implementation remains present, but normal uploads time out on the current hardware export before any AXI-stream beat is emitted.
+The current `fpga_drm.ko` driver is a DRM/KMS driver. It binds the Xilinx PCIe endpoint, exposes explicit KMS objects for one CRTC, one primary plane, one virtual encoder, and one virtual connector, advertises common 30 Hz and 60 Hz modes up to a `148.5 MHz` pixel clock, prefers `1920x1080@60`, and accepts linear `XRGB8888` framebuffers. Userspace changes resolution with normal KMS modesets; the driver then reprograms the video clock wizard, VTC, and VDMA for the selected mode through the XDMA bypass BAR. Its XDMA H2C upload implementation remains present, but normal uploads time out on the current hardware export before any AXI-stream beat is emitted.
 
 An experimental overlay path is available with `enable_overlay=1`. It exposes one additional linear `XRGB8888` KMS overlay plane and composites it in CPU code into the existing XDMA upload staging buffers. The overlay accepts same-size source/destination rectangles only: no scaling, no alpha/blend property, no rotation property yet, and the destination rectangle must fit inside the active CRTC mode. The default remains `enable_overlay=0`; there is still no `DRIVER_RENDER`, render node, private render ioctl, or Mesa userspace driver.
 
@@ -34,7 +34,7 @@ Supported modes:
 | `1280x720@30` | `37.125 MHz` |
 | `1280x1024@60` | `108.000 MHz` |
 | `1280x1024@30` | `54.000 MHz` |
-| `1920x1080@60` | `148.500 MHz` |
+| `1920x1080@60` (preferred) | `148.500 MHz` |
 | `1920x1080@30` | `74.250 MHz` |
 
 Earlier hardware validated `drm_info`, `modetest -M fpga_drm`, GDM/Xorg desktop pickup, and direct atomic overlay tests. The current July 16 export separately validates the GOP-relevant direct-BAR path: BAR2 writes at offset `0x02000000` reach shared DDR address `0x3e000000`, VDMA MM2S scans that same address, and the attached monitor showed correct `1280x720@60` color bars. This direct result does not clear the current H2C regression.
@@ -45,8 +45,15 @@ The 30 Hz modes keep the same active resolution as their 60 Hz counterparts and 
 ## Hardware
 Hardware supports the driver whitelist up to `1920x1080@60` and the lower-clock 30 Hz variants. Configuration of the IPs is done by `fpga_drm.ko` through the XDMA bypass BAR. The current 64 MiB BAR2 also exposes a shared 32 MiB DDR window for direct CPU writes, which is the framebuffer mechanism selected for UEFI GOP. The pixel format is 32-bit XRGB on the PCIe input side and 24-bit RGB on the HDMI output side.
 
-The Linux Vivado recreate flow is documented in `doc/vivado_linux_recreate.md`.
+The sole active hardware configuration is the validated 1080p-default GOP
+design. Its source-only Vivado recreation flow is documented in
+`doc/vivado_linux_recreate.md`; generated `.xpr` projects and bitstreams remain
+outside Git.
 
 # Next Step
 
-Current next steps are tracked in `doc/project_next_steps.md`. The active work is a pinned EDK II build, a verbose `SimpleDisplayBringup.efi` Shell application, and a manually loaded fixed-mode GOP driver using the direct BAR framebuffer. XDMA H2C recovery or a validated Linux direct-BAR upload backend proceeds in parallel because native Linux takeover depends on it. Overlay/compositor expansion is deferred.
+Current next steps are tracked in `doc/project_next_steps.md`. The accepted
+baseline now uses the fixed `1920x1080@60` GOP mode, the sealed 32 KiB Option
+ROM, and the matching Linux `fpga_drm` handoff. Historical PixelBltOnly and
+transport-only hardware variants remain available through Git history rather
+than parallel Vivado projects. Overlay/compositor expansion is deferred.

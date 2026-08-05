@@ -237,11 +237,21 @@ rebooting.
 Only continue after Step 6 passes visibly:
 
 ```text
-load SimpleDisplayGopDxe.efi
-connect -r
-drivers
-devices
-dh -p GraphicsOutput
+load -nc SimpleDisplayGopDxe.efi
+drivers >a evidence\drivers-loaded.txt
+devices >a evidence\devices-before-connect.txt
+```
+
+Run `load -nc` exactly once. From those two captures, identify the current
+SimpleDisplay driver handle by its image path and the current FPGA controller
+handle by the PCI path that corresponds to the fresh `10ee:7024` capture.
+Handles are boot-local. Then substitute them below; do not use `-r`:
+
+```text
+connect <fpga-controller-handle> <simple-display-driver-handle> >a evidence\connect-targeted.txt
+drivers >a evidence\drivers-bound.txt
+devices >a evidence\devices-after-connect.txt
+dh -p GraphicsOutput >a evidence\graphics-output-handles.txt
 ```
 
 `dh -p GraphicsOutput` may list the motherboard GPU as well. The new Simple
@@ -249,8 +259,12 @@ Display child is distinguished by the driver having one mode, a framebuffer
 inside BAR2, and empty EDID protocols. The test application performs those
 checks automatically.
 
-Loading or connecting the driver must not change the visible frame. The first
-visible GOP change occurs when `SetMode()` is exercised by the test.
+Loading with `-nc` and the targeted non-recursive connection must not change
+the iGPU console or the visible FPGA frame. Stop and warm-reset if either one
+changes. Plain `load` is not suitable for this gate because the TianoCore Shell
+follows it with a recursive connect-all operation; a Graphics Console consumer
+may then call GOP `SetMode()`. The first permitted visible GOP change in this
+runbook occurs when the test explicitly exercises `SetMode()`.
 
 ## Step 8: run the GOP protocol and BLT test
 
@@ -305,6 +319,158 @@ Store the curated results under:
 firmware/uefi/test_logs/YYYY-MM-DD_shell_bringup/
 ```
 
+## Current cold-state automatic-binding repair gate
+
+Use this sequence for the 2026-08-04 Driver Binding repair. It intentionally
+replaces Steps 6-9 above: **do not run `SimpleDisplayBringup.efi`**, because it
+enables PCI memory decoding and would mask the original cold-state failure.
+
+On Linux, verify and stage the current build on the FAT USB volume. If the
+volume is mounted read-only, unmount and remount it read-write before copying;
+do not reformat it or replace the preserved Shell files:
+
+```bash
+scripts/test_uefi_contract.py
+python3 scripts/test_uefi_shell_log.py
+python3 scripts/test_uefi_cold_bind_validation.py
+python3 scripts/test_uefi_auto_gop_validation.py
+scripts/build_uefi.sh
+cd build/gop/artifacts
+sha256sum -c SHA256SUMS
+cd ../../..
+export USB_MOUNT=/media/alpk/ALP
+install -m 0644 build/gop/artifacts/SimpleDisplayGopDxe.efi \
+  "$USB_MOUNT/EFI/SimpleDisplay/"
+install -m 0644 build/gop/artifacts/SimpleDisplayGopTest.efi \
+  "$USB_MOUNT/EFI/SimpleDisplay/"
+install -m 0644 build/gop/artifacts/SHA256SUMS \
+  "$USB_MOUNT/EFI/SimpleDisplay/"
+cd "$USB_MOUNT/EFI/SimpleDisplay"
+sha256sum -c SHA256SUMS
+sync
+```
+
+The required hashes for this repair build are:
+
+```text
+76183ab80b31a3a9f519b97f5a24ef26bdb917856595e34bfd97b7c8c2a74117  SimpleDisplayGopDxe.efi
+4c21b7fc8c6c0baa1bf0c09236e645087386a52d6ece2f3639579f602722a61a  SimpleDisplayGopTest.efi
+```
+
+The superseded `4acd6244...` build proved exact post-disconnect restoration to
+Command `0000`, but both fresh reconnect attempts returned `Not Found`. The
+current build additionally verifies raw memory decode after the abstract
+enable operation and writes/reads back the Command memory bit when firmware's
+cached attribute state does not match hardware. The sequence below has now
+passed on the board without running `SimpleDisplayBringup.efi`. The sealed
+record is
+`firmware/uefi/test_logs/2026-08-04_cold_bind_pass/COLD_GOP_BIND_VALIDATION_PASS.json`.
+
+Cold boot to the Shell, map the USB, enter `EFI\SimpleDisplay`, and rediscover
+the boot-local FPGA controller handle. Capture its detailed dump before
+loading the fixed driver; its configuration header must show PCI Command
+`0000`:
+
+```text
+map -r
+fsN:
+cd EFI\SimpleDisplay
+devices >a cold_devices_before.log
+dh -v <fpga-controller-handle> >a cold_pre_device.log
+load -nc SimpleDisplayGopDxe.efi
+drivers >a cold_loaded_driver.log
+connect <fpga-controller-handle> <simple-display-driver-handle> >a cold_connect.log
+dh -p GraphicsOutput >a cold_graphics.log
+SimpleDisplayGopTest.efi >a cold_gop.log
+```
+
+Require two GraphicsOutput handles and `GOP_TEST_PASS`. Confirm separately that
+the FPGA monitor shows the test graphics and the iGPU remains the Shell console.
+Then exercise cleanup and restart with the same boot-local handles:
+
+```text
+disconnect <fpga-controller-handle> <simple-display-driver-handle> >a cold_disconnect.log
+dh -v <fpga-controller-handle> >a cold_post_disconnect_device.log
+dh -p GraphicsOutput >a cold_post_disconnect_graphics.log
+connect <fpga-controller-handle> <simple-display-driver-handle> >a cold_reconnect.log
+dh -v <fpga-controller-handle> >a cold_reconnect_device.log
+dh -p GraphicsOutput >a cold_reconnect_graphics.log
+SimpleDisplayGopTest.efi >a cold_reconnect_gop.log
+```
+
+The post-disconnect device dump must again show Command `0000`, its graphics
+inventory must contain only the platform GOP, and the reconnect device dump
+must have Memory Space Enable set. The reconnect capture must again contain
+two GOP handles and a second exact `MODE_INFO 0 1920x1080 format=3 ppsl=1920`
+plus `GOP_TEST_PASS`. After Linux resumes, seal the untouched logs and exact
+tested binaries:
+
+```bash
+python3 scripts/record_uefi_cold_bind_validation.py \
+  --pre-device-log "$USB_MOUNT/EFI/SimpleDisplay/cold_pre_device.log" \
+  --loaded-driver-log "$USB_MOUNT/EFI/SimpleDisplay/cold_loaded_driver.log" \
+  --connect-log "$USB_MOUNT/EFI/SimpleDisplay/cold_connect.log" \
+  --graphics-log "$USB_MOUNT/EFI/SimpleDisplay/cold_graphics.log" \
+  --gop-log "$USB_MOUNT/EFI/SimpleDisplay/cold_gop.log" \
+  --disconnect-log "$USB_MOUNT/EFI/SimpleDisplay/cold_disconnect.log" \
+  --post-disconnect-device-log "$USB_MOUNT/EFI/SimpleDisplay/cold_post_disconnect_device.log" \
+  --post-disconnect-graphics-log "$USB_MOUNT/EFI/SimpleDisplay/cold_post_disconnect_graphics.log" \
+  --reconnect-log "$USB_MOUNT/EFI/SimpleDisplay/cold_reconnect.log" \
+  --reconnect-device-log "$USB_MOUNT/EFI/SimpleDisplay/cold_reconnect_device.log" \
+  --reconnect-graphics-log "$USB_MOUNT/EFI/SimpleDisplay/cold_reconnect_graphics.log" \
+  --reconnect-gop-log "$USB_MOUNT/EFI/SimpleDisplay/cold_reconnect_gop.log" \
+  --driver build/gop/artifacts/SimpleDisplayGopDxe.efi \
+  --gop-test build/gop/artifacts/SimpleDisplayGopTest.efi \
+  --expected-width 1920 --expected-height 1080 \
+  --bringup-not-run --visible-output-confirmed --igpu-shell-preserved
+python3 scripts/check_uefi_cold_bind_validation.py
+```
+
+This exact run produced `COLD_GOP_BIND_VALIDATION_PASS`: it started and ended
+with Command `0000`, created separate iGPU and FPGA GOP handles, completed
+`GOP_TEST_PASS`, disconnected, and reconnected successfully. The user also
+confirmed the visible FPGA rectangle and undisturbed iGPU screen. The packager
+then embedded the exact driver into
+`vivado_project/rom/simple_display_gop_option_rom.bin`, SHA-256
+`eeacaa66703abb7fa10c2677cd9738fcb70b0dfe531c07a65bb8a52c0c11df7e`.
+
+The matching isolated `PCIe_GOP_ROM_32K_AUTOBIND1` build and independent audit
+pass with WNS `-0.780 ns` against the accepted `-2.500 ns` minimum, WHS
+`+0.017 ns`, zero blocking DRC errors, zero unrouted/partially routed nets, and
+lane order `5,4,6,7`. The exact deployment hashes are `e08fd656...` (`.bit`),
+`17c2fbf6...` (SPI `.bin`), and `fc18aae4...` (`.ltx`). SPI erase,
+programming, and verification now pass, and the matching application
+bitstream/probes were restored to SRAM. A complete shutdown/power-on is still
+required to prove configuration from flash; automatic Option-ROM binding also
+remains a separate gate.
+
+After booting that persistent build from a complete power-off, the final
+cold-boot capture must not run `load` or `connect`. Capture the ROM-loaded
+driver, associated FPGA device, existing GOP handles, and GOP test directly:
+
+```text
+dh -v <option-rom-driver-handle> >a auto_driver.log
+dh -v <fpga-controller-handle> >a auto_device.log
+dh -p GraphicsOutput >a auto_graphics.log
+SimpleDisplayGopTest.efi >a auto_gop.log
+```
+
+Seal that separate automatic gate with:
+
+```bash
+python3 scripts/record_uefi_auto_gop_validation.py \
+  --driver-log "$USB_MOUNT/EFI/SimpleDisplay/auto_driver.log" \
+  --device-log "$USB_MOUNT/EFI/SimpleDisplay/auto_device.log" \
+  --graphics-log "$USB_MOUNT/EFI/SimpleDisplay/auto_graphics.log" \
+  --gop-log "$USB_MOUNT/EFI/SimpleDisplay/auto_gop.log" \
+  --driver firmware/uefi/test_logs/2026-08-04_cold_bind_pass/tested_payload/SimpleDisplayGopDxe.efi \
+  --gop-test firmware/uefi/test_logs/2026-08-04_cold_bind_pass/tested_payload/SimpleDisplayGopTest.efi \
+  --option-rom vivado_project/rom/simple_display_gop_option_rom.bin \
+  --no-manual-load --no-manual-connect \
+  --visible-output-confirmed --igpu-shell-preserved
+python3 scripts/check_uefi_auto_gop_validation.py
+```
+
 ## Quick failure guide
 
 | Symptom | First action |
@@ -320,7 +486,8 @@ firmware/uefi/test_logs/YYYY-MM-DD_shell_bringup/
 
 ## Stop/go boundary
 
-A successful run proves manual UEFI hardware access and a Shell-loaded GOP. It
-does not yet prove automatic Option ROM execution, firmware-console selection,
+A successful cold USB run proves the repaired Shell-loaded GOP binding path.
+It does not yet prove automatic binding from the rebuilt Option ROM,
+firmware-console selection,
 Linux framebuffer handoff, or cold-boot reliability. Promote another fixed
 mode only after this complete sequence passes for `1280x720@60`.
