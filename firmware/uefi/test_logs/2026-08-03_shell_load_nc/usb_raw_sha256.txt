@@ -1,0 +1,6 @@
+137e8fb542934e2fb1db7531bbf9b6f90509c01e22db33b7bf7f29dcd7f6061b  /media/alpk/ALP/EFI/SimpleDisplay/evidence/pci-shell.log
+9133fb9af25c1e2adfef1b9a8ac92ed96434d5e1885264e345c2f5cd84d89e57  /media/alpk/ALP/EFI/SimpleDisplay/evidence/devices.txt
+72909184d6050bd23f1e23eda47b8a61001e259d6dabb4cea63bfe495e86f0d0  /media/alpk/ALP/EFI/SimpleDisplay/evidence/drivers.txt
+9133fb9af25c1e2adfef1b9a8ac92ed96434d5e1885264e345c2f5cd84d89e57  /media/alpk/ALP/EFI/SimpleDisplay/evidence/devices_after.txt
+3b35f6d3ee3023de02b4cd9c9c24ccb5a07f3a41aa54e576284c929d2e55b24c  /media/alpk/ALP/EFI/SimpleDisplay/evidence/drivers_after.txt
+ac26dc212ebbe7bbb4dd801062582e3945f72c3833ba22ad00cb81585fa2b86b  /media/alpk/ALP/EFI/SimpleDisplay/evidence/uefi-shell.log

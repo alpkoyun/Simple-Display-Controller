@@ -1,0 +1,3 @@
+Handle dump by protocol 'GraphicsOutput'
+F9: SimpleTextOut EDIDActive(EDIDActive) GraphicsOutput(GraphicsOutput) EDIDDiscovered(EDIDDiscovered) 39487C79-236D-4666-87E5-09547CAAE1BC DevicePath(..0x2,0x0)/AcpiAdr(0x80014321)) 
+11A: EDIDActive(EDIDActive) EDIDDiscovered(EDIDDiscovered) GraphicsOutput(GraphicsOutput) DevicePath(..0x0,0x0)/AcpiAdr(0x80020300)) 

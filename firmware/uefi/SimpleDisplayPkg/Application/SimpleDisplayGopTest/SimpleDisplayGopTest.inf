@@ -1,0 +1,33 @@
+## @file
+# GOP protocol and BLT conformance application for SimpleDisplayGopDxe.
+#
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = SimpleDisplayGopTest
+  FILE_GUID                      = 554b5950-05d5-4b17-b7ec-ef31c0bacb20
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = UefiMain
+
+[Sources]
+  SimpleDisplayGopTest.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  SimpleDisplayPkg/SimpleDisplayPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  MemoryAllocationLib
+  SimpleDisplayHwLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Protocols]
+  gEfiEdidActiveProtocolGuid
+  gEfiEdidDiscoveredProtocolGuid
+  gEfiGraphicsOutputProtocolGuid

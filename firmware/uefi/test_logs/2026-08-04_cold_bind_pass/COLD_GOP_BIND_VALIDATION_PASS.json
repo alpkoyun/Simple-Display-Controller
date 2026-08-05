@@ -1,0 +1,66 @@
+{
+  "bringup_not_run": true,
+  "command_after_disconnect": 0,
+  "command_before": 0,
+  "disconnect_restore_pass": true,
+  "driver_path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/tested_payload/SimpleDisplayGopDxe.efi",
+  "driver_sha256": "76183ab80b31a3a9f519b97f5a24ef26bdb917856595e34bfd97b7c8c2a74117",
+  "gate": "COLD_GOP_BIND_VALIDATION_PASS",
+  "gop_test_pass": true,
+  "gop_test_path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/tested_payload/SimpleDisplayGopTest.efi",
+  "gop_test_sha256": "4c21b7fc8c6c0baa1bf0c09236e645087386a52d6ece2f3639579f602722a61a",
+  "igpu_shell_preserved": true,
+  "logs": {
+    "connect": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/connect.log",
+      "sha256": "a04857d30535d3aab0e08e5288ed3bc2d435b966294882312b743b179fa50243"
+    },
+    "disconnect": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/disconnect.log",
+      "sha256": "8f79a1996799a7c663c8ae55ab21a70706463a1fca8d19db5ff67e547589f986"
+    },
+    "gop": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/gop.log",
+      "sha256": "4678a11625457f473fbe1784f7a288761759996bafd82191b9e2119952b17987"
+    },
+    "graphics": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/graphics.log",
+      "sha256": "71b8df645a136cbc109f0af04fc977366436868d1c4f4c17559f256c795199cb"
+    },
+    "loaded_driver": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/loaded_driver.log",
+      "sha256": "9fe26cd1e6c283063386719fbb68561253407f97b42b2c6773bf58ed2f55db62"
+    },
+    "post_disconnect_device": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/post_disconnect_device.log",
+      "sha256": "fdd67b8ea311ac97cda5fe812ad474e707c0d79150f87eb537ee3140174e4ccf"
+    },
+    "pre_device": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/pre_device.log",
+      "sha256": "fdd67b8ea311ac97cda5fe812ad474e707c0d79150f87eb537ee3140174e4ccf"
+    },
+    "reconnect": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/reconnect.log",
+      "sha256": "a04857d30535d3aab0e08e5288ed3bc2d435b966294882312b743b179fa50243"
+    },
+    "reconnect_graphics": {
+      "encoding": "utf-8",
+      "path": "firmware/uefi/test_logs/2026-08-04_cold_bind_pass/raw/reconnect_graphics.log",
+      "sha256": "742d5d0f3bedde161715b39edba5e1e3eb8052a5d202462d278a17f9759d38c7"
+    }
+  },
+  "reconnect_pass": true,
+  "recorded_utc": "2026-08-04T13:02:18.284861+00:00",
+  "schema_version": 1,
+  "targeted_bind_pass": true,
+  "two_graphics_outputs": true,
+  "visible_output_confirmed": true
+}

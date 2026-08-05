@@ -1,0 +1,28 @@
+## @file
+# Shared Simple Display hardware programming library.
+#
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = SimpleDisplayHwLib
+  FILE_GUID                      = 81c7195c-5ef5-4a60-ae67-8947b592af87
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 0.1
+  LIBRARY_CLASS                  = SimpleDisplayHwLib|UEFI_APPLICATION UEFI_DRIVER
+
+[Sources]
+  SimpleDisplayHwLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  SimpleDisplayPkg/SimpleDisplayPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+
+[Protocols]
+  gEfiPciIoProtocolGuid

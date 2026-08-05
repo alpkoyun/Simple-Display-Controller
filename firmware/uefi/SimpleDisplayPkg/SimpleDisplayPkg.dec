@@ -1,0 +1,17 @@
+## @file
+# Simple Display Controller UEFI package declaration.
+#
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION              = 0x00010005
+  PACKAGE_NAME                   = SimpleDisplayPkg
+  PACKAGE_GUID                   = dbde7d49-0181-4e62-a818-9112595e9046
+  PACKAGE_VERSION                = 0.1
+
+[Includes]
+  Include
+
+[LibraryClasses]
+  SimpleDisplayHwLib|Include/Library/SimpleDisplayHwLib.h

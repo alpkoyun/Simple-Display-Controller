@@ -1,0 +1,31 @@
+## @file
+# Verbose UEFI Shell bring-up application for the Simple Display Controller.
+#
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = SimpleDisplayBringup
+  FILE_GUID                      = 00dedcef-9beb-468b-8c18-8df65f75618a
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = UefiMain
+
+[Sources]
+  SimpleDisplayBringup.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  SimpleDisplayPkg/SimpleDisplayPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  MemoryAllocationLib
+  SimpleDisplayHwLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Protocols]
+  gEfiPciIoProtocolGuid
