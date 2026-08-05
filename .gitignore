@@ -12,7 +12,7 @@ vivado_ip_docs
 /vivado*.jou
 /xelab.log
 /xelab.pb
-
+firmware/uefi/test_logs*
 # Python helper-script bytecode.
 __pycache__/
 *.py[cod]
