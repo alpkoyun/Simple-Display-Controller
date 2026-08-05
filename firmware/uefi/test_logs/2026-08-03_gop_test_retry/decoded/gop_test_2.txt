@@ -1,5 +1,0 @@
-EDID_EMPTY_PASS discovered=0/0 active=0/0
-MODE_INFO 0 1280x720 format=1 ppsl=1280
-MODE_TEST_PASS
-BLT_FAIL transfer/guard mismatch x=1 y=0 actual=0x00000000 expected=0x00C35AA5
-GOP_TEST_FAIL Compromised Data

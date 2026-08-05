@@ -1,6 +1,0 @@
-6dcd099a734e24ae272a2b2e6a7e100c0024547e87842f0bbefcbf8c700b272c  /media/alpk/ALP/EFI/SimpleDisplay/evidence/drivers-loaded.txt
-56a352876a9938845b0ff6161dbdb7091ebdd8fc728198cf05b02ae5e90f7550  /media/alpk/ALP/EFI/SimpleDisplay/evidence/devices-loaded.txt
-6dcd099a734e24ae272a2b2e6a7e100c0024547e87842f0bbefcbf8c700b272c  /media/alpk/ALP/EFI/SimpleDisplay/evidence/drivers-bound.txt
-56a352876a9938845b0ff6161dbdb7091ebdd8fc728198cf05b02ae5e90f7550  /media/alpk/ALP/EFI/SimpleDisplay/evidence/devices-after-connect.txt
-a04857d30535d3aab0e08e5288ed3bc2d435b966294882312b743b179fa50243  /media/alpk/ALP/EFI/SimpleDisplay/evidence/connect=targeted.txt
-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  /media/alpk/ALP/EFI/SimpleDisplay/load.log
