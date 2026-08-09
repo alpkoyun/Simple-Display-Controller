@@ -1,0 +1,40 @@
+## @file
+# UEFI Driver Model GOP driver for the Simple Display Controller.
+#
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = SimpleDisplayGopDxe
+  FILE_GUID                      = f069afc4-f1b0-4b71-ab4f-e7c5985d1f67
+  MODULE_TYPE                    = UEFI_DRIVER
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = SimpleDisplayGopEntryPoint
+
+[Sources]
+  SimpleDisplay.h
+  SimpleDisplayGopDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  SimpleDisplayPkg/SimpleDisplayPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  MemoryAllocationLib
+  SimpleDisplayHwLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  UefiLib
+
+[Protocols]
+  gEfiDevicePathProtocolGuid
+  gEfiEdidActiveProtocolGuid
+  gEfiEdidDiscoveredProtocolGuid
+  gEfiGraphicsOutputProtocolGuid
+  gEfiPciIoProtocolGuid

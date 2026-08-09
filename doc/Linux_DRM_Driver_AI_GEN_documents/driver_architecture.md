@@ -20,7 +20,7 @@ uses the vendored XDMA core to transfer the committed framebuffer to the FPGA.
 
 | Contract | Current implementation |
 |---|---|
-| Display modes | `fpga_video_modes[]` advertises common 30 Hz and 60 Hz timings up to `1920x1080@60` and `148.5 MHz`. |
+| Display modes | `fpga_video_modes[]` advertises common 30 Hz and 60 Hz timings up to `1920x1080@60` and `148.5 MHz`, with 1080p60 as the sole preferred mode. |
 | Pixel format | `fpga_drm_formats[]` advertises `DRM_FORMAT_XRGB8888`; `fpga_drm_copy_frame()` validates format and size. |
 | Frame staging | `fpga_drm_alloc_frame_buffers()` allocates 1080 max-width line buffers and one max-height `frame_sgt`; submit uses an active-mode SG view. |
 | Video-IP setup | `fpga_drm_configure_static_pipeline()` programs static IP state; `fpga_drm_program_mode()` programs clock wizard, VDMA, VTC, and debug readbacks. |
@@ -35,7 +35,7 @@ uses the vendored XDMA core to transfer the committed framebuffer to the FPGA.
 | XDMA AXI-Lite bypass BAR | Required at probe for this hardware; `xdma_device_bypass_bar()` exposes it to the DRM side for video-IP registers. |
 | XDMA H2C AXI-stream engine | Used by `xdma_xfer_submit_lines_nowait()` with `write=true`, `line_size=active_width * 4`, and `line_count=active_height`. |
 | FPGA video path | VDMA S2MM captures H2C line packets into DDR frame buffers; VDMA MM2S feeds pixel unpack, color convert, and HDMI timing. |
-| Host video IP setup | Linux programs the bypass BAR address map from `PCIe.hwh`, including VDMA at `0x00040000`. |
+| Host video IP setup | Linux programs AXI VDMA at `0x3c040000`, reached through bypass BAR offset `0x00040000`. |
 
 ## Main Files
 

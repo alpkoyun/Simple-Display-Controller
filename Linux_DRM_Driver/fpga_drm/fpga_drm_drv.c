@@ -57,18 +57,41 @@
 
 #define FPGA_HW_FRAME_COUNT		4U
 #define FPGA_HW_FRAME_SPACING		(FPGA_DRM_MAX_FRAME_BYTES + 0x1000U)
-#define FPGA_HW_FRAME_BASE		0x81000000ULL
+#define FPGA_HW_DDR_AXI_BASE		0x3E000000ULL
+#define FPGA_HW_DDR_AXI_SIZE		0x02000000ULL
+#define FPGA_HW_DDR_AXI_END		(FPGA_HW_DDR_AXI_BASE + \
+					 FPGA_HW_DDR_AXI_SIZE - 1)
+#define FPGA_HW_BYPASS_AXI_TRANSLATION	0x3C000000ULL
+#define FPGA_HW_BYPASS_RESOURCE_SIZE	0x04000000ULL
+#define FPGA_HW_BYPASS_HOST_USABLE_SIZE	0x04000000ULL
+#define FPGA_HW_DDR_BYPASS_AXI_BASE	0x3E000000ULL
+#define FPGA_HW_DDR_BYPASS_SIZE		0x02000000ULL
+#define FPGA_HW_DDR_BYPASS_AXI_END	(FPGA_HW_DDR_BYPASS_AXI_BASE + \
+					 FPGA_HW_DDR_BYPASS_SIZE - 1)
+#define FPGA_HW_DDR_SCRATCH_AXI_BASE	0x3FFFF000ULL
+/* The bypass and both VDMA masters share the same 32 MiB DDR address map. */
+#define FPGA_HW_GOP_BYPASS_FRAME_BASE	0x3E000000ULL
+#define FPGA_HW_GOP_BYPASS_FRAME_END	(FPGA_HW_GOP_BYPASS_FRAME_BASE + \
+					 FPGA_DRM_MAX_FRAME_BYTES - 1)
+#define FPGA_HW_GOP_VDMA_FRAME_BASE	0x3E000000ULL
+#define FPGA_HW_GOP_VDMA_FRAME_END	(FPGA_HW_GOP_VDMA_FRAME_BASE + \
+					 FPGA_DRM_MAX_FRAME_BYTES - 1)
+#define FPGA_HW_FRAME_BASE		0x3E000000ULL
+#define FPGA_HW_FRAME_RING_END		(FPGA_HW_FRAME_BASE + \
+					 (FPGA_HW_FRAME_COUNT - 1) * \
+					 FPGA_HW_FRAME_SPACING + \
+					 FPGA_DRM_MAX_FRAME_BYTES - 1)
 
-#define FPGA_HW_COLOR_CONVERT_BASE	0x00000000ULL
-#define FPGA_HW_PIXEL_UNPACK_BASE	0x00010000ULL
-#define FPGA_HW_AXI_IIC_BASE		0x00020000ULL
-#define FPGA_HW_VDMA_BASE		0x00040000ULL
-#define FPGA_HW_VTC_BASE		0x00050000ULL
-#define FPGA_HW_VIDEO_CLK_WIZ_BASE	0x00060000ULL
-#define FPGA_HW_VIDEO_LOCK_GPIO_BASE	0x00070000ULL
-#define FPGA_HW_DDR_BASE		0x00080000ULL
+#define FPGA_HW_PIXEL_UNPACK_BASE	0x3C000000ULL
+#define FPGA_HW_VTC_BASE		0x3C010000ULL
+#define FPGA_HW_AXI_IIC_BASE		0x3C020000ULL
+#define FPGA_HW_VDMA_BASE		0x3C040000ULL
+#define FPGA_HW_COLOR_CONVERT_BASE	0x3C050000ULL
+#define FPGA_HW_VIDEO_CLK_WIZ_BASE	0x3C060000ULL
+#define FPGA_HW_VIDEO_LOCK_GPIO_BASE	0x3C070000ULL
 
 #define FPGA_HW_REG_WINDOW		0x10000ULL
+#define FPGA_HW_DDR_TEST_WORDS		4U
 
 #define HLS_PIXEL_UNPACK_MODE		0x10
 #define HLS_COLOR_C1_C1		0x10
@@ -217,6 +240,11 @@ module_param(configure_pipeline, bool, 0644);
 MODULE_PARM_DESC(configure_pipeline,
 		 "Configure FPGA video IPs through XDMA MMIO BAR during probe and modeset. Default is true.");
 
+static bool ddr_bypass_test;
+module_param(ddr_bypass_test, bool, 0644);
+MODULE_PARM_DESC(ddr_bypass_test,
+		 "Test direct bypass-to-DDR access and draw a DDR scanout pattern. Requires upload_enabled=0 and configure_pipeline=1. Default is false.");
+
 static bool enable_overlay;
 module_param(enable_overlay, bool, 0644);
 MODULE_PARM_DESC(enable_overlay,
@@ -248,7 +276,8 @@ struct fpga_drm_device {
 	int h2c_channel_max;
 	int c2h_channel_max;
 	void __iomem *mmio_bar;
-	resource_size_t mmio_bar_len;
+	resource_size_t mmio_bar_resource_len;
+	resource_size_t mmio_bar_mapped_len;
 	int mmio_bar_idx;
 	const char *mmio_bar_name;
 
@@ -359,8 +388,7 @@ static const struct fpga_video_mode fpga_video_modes[] = {
 		  FPGA_CLK_CFG0(4, 13, 0), FPGA_CLK_CFG2(20, 0)),
 	FPGA_MODE("1280x720@60", 74250,
 		  1280, 1390, 1430, 1650, 720, 725, 730, 750,
-		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
-		  DRM_MODE_TYPE_PREFERRED,
+		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0,
 		  FPGA_CLK_CFG0(10, 37, 125), FPGA_CLK_CFG2(10, 0)),
 	FPGA_MODE("1280x720@30", 37125,
 		  1280, 1390, 1430, 1650, 720, 725, 730, 750,
@@ -376,7 +404,8 @@ static const struct fpga_video_mode fpga_video_modes[] = {
 		  FPGA_CLK_CFG0(5, 27, 0), FPGA_CLK_CFG2(20, 0)),
 	FPGA_MODE("1920x1080@60", 148500,
 		  1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125,
-		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0,
+		  DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
+		  DRM_MODE_TYPE_PREFERRED,
 		  FPGA_CLK_CFG0(10, 37, 125), FPGA_CLK_CFG2(5, 0)),
 	FPGA_MODE("1920x1080@30", 74250,
 		  1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125,
@@ -438,6 +467,306 @@ static const u64 fpga_hw_frame_addr[FPGA_HW_FRAME_COUNT] = {
 	FPGA_HW_FRAME_BASE + 3 * FPGA_HW_FRAME_SPACING,
 };
 
+static unsigned int fpga_drm_vdma_frame_count(void)
+{
+	return ddr_bypass_test ? 1U : FPGA_HW_FRAME_COUNT;
+}
+
+static u64 fpga_drm_vdma_frame_addr(unsigned int index)
+{
+	return ddr_bypass_test ? FPGA_HW_GOP_VDMA_FRAME_BASE :
+		fpga_hw_frame_addr[index];
+}
+
+static int fpga_drm_axi_to_bar_offset(struct fpga_drm_device *fpga,
+				      u64 axi_addr, size_t size,
+				      resource_size_t limit, u64 *bar_offset)
+{
+	u64 end_addr;
+	u64 end_offset;
+	u64 offset;
+
+	if (!bar_offset || !size)
+		return -EINVAL;
+	if (strcmp(fpga->mmio_bar_name, "bypass"))
+		return -EOPNOTSUPP;
+	if (axi_addr < FPGA_HW_BYPASS_AXI_TRANSLATION)
+		return -ERANGE;
+	if (axi_addr > U64_MAX - (size - 1))
+		return -ERANGE;
+
+	offset = axi_addr - FPGA_HW_BYPASS_AXI_TRANSLATION;
+	end_addr = axi_addr + size - 1;
+	end_offset = offset + size - 1;
+	if (offset > U64_MAX - (size - 1) || end_offset >= limit ||
+	    end_offset >= FPGA_HW_BYPASS_HOST_USABLE_SIZE)
+		return -ERANGE;
+
+	/*
+	 * XDMA forms M_AXI_BYPASS addresses by inserting the BAR offset into
+	 * the configured translation bits.  Verify both ends explicitly so a
+	 * host offset cannot alias a bit already set in the translation base.
+	 */
+	if ((FPGA_HW_BYPASS_AXI_TRANSLATION | offset) != axi_addr ||
+	    (FPGA_HW_BYPASS_AXI_TRANSLATION | end_offset) != end_addr)
+		return -ERANGE;
+
+	*bar_offset = offset;
+	return 0;
+}
+
+static int fpga_drm_validate_hw_contract(struct fpga_drm_device *fpga)
+{
+	u64 ddr_bar_offset;
+	u64 gop_bar_offset;
+	u64 scratch_bar_offset;
+	int ret;
+
+	if (strcmp(fpga->mmio_bar_name, "bypass")) {
+		drm_err(&fpga->drm,
+			"translated hardware contract requires an XDMA bypass BAR\n");
+		return -EOPNOTSUPP;
+	}
+	if (fpga->mmio_bar_resource_len < FPGA_HW_BYPASS_RESOURCE_SIZE) {
+		drm_err(&fpga->drm,
+			"translated hardware contract requires BAR%d resource >=0x%llx, got 0x%llx\n",
+			fpga->mmio_bar_idx, FPGA_HW_BYPASS_RESOURCE_SIZE,
+			(unsigned long long)fpga->mmio_bar_resource_len);
+		return -ERANGE;
+	}
+	if (FPGA_HW_FRAME_SPACING < FPGA_DRM_MAX_FRAME_BYTES ||
+	    FPGA_HW_FRAME_BASE < FPGA_HW_DDR_AXI_BASE ||
+	    FPGA_HW_FRAME_RING_END > FPGA_HW_DDR_AXI_END ||
+	    FPGA_HW_FRAME_BASE != FPGA_HW_GOP_VDMA_FRAME_BASE ||
+	    FPGA_HW_GOP_BYPASS_FRAME_BASE < FPGA_HW_DDR_BYPASS_AXI_BASE ||
+	    FPGA_HW_GOP_BYPASS_FRAME_END > FPGA_HW_DDR_BYPASS_AXI_END ||
+	    FPGA_HW_GOP_VDMA_FRAME_BASE < FPGA_HW_DDR_AXI_BASE ||
+	    FPGA_HW_GOP_VDMA_FRAME_END > FPGA_HW_DDR_AXI_END ||
+	    FPGA_HW_GOP_BYPASS_FRAME_BASE != FPGA_HW_GOP_VDMA_FRAME_BASE ||
+	    FPGA_HW_DDR_SCRATCH_AXI_BASE <= FPGA_HW_FRAME_RING_END ||
+	    FPGA_HW_DDR_SCRATCH_AXI_BASE <= FPGA_HW_GOP_BYPASS_FRAME_END ||
+	    FPGA_HW_DDR_SCRATCH_AXI_BASE + PAGE_SIZE - 1 >
+		    FPGA_HW_DDR_BYPASS_AXI_END ||
+	    FPGA_HW_FRAME_RING_END > U32_MAX) {
+		drm_err(&fpga->drm,
+			"invalid frame/scratch layout: VDMA_ring=0x%08llx-0x%08llx GOP_bypass=0x%08llx-0x%08llx GOP_VDMA=0x%08llx-0x%08llx scratch=0x%08llx DDR=0x%08llx-0x%08llx bypass_DDR=0x%08llx-0x%08llx\n",
+			FPGA_HW_FRAME_BASE, FPGA_HW_FRAME_RING_END,
+			FPGA_HW_GOP_BYPASS_FRAME_BASE,
+			FPGA_HW_GOP_BYPASS_FRAME_END,
+			FPGA_HW_GOP_VDMA_FRAME_BASE,
+			FPGA_HW_GOP_VDMA_FRAME_END,
+			FPGA_HW_DDR_SCRATCH_AXI_BASE,
+			FPGA_HW_DDR_AXI_BASE, FPGA_HW_DDR_AXI_END,
+			FPGA_HW_DDR_BYPASS_AXI_BASE,
+			FPGA_HW_DDR_BYPASS_AXI_END);
+		return -ERANGE;
+	}
+
+	ret = fpga_drm_axi_to_bar_offset(fpga, FPGA_HW_DDR_BYPASS_AXI_BASE,
+					 FPGA_HW_DDR_BYPASS_SIZE,
+					 fpga->mmio_bar_resource_len,
+					 &ddr_bar_offset);
+	if (ret)
+		return ret;
+	ret = fpga_drm_axi_to_bar_offset(fpga,
+					 FPGA_HW_GOP_BYPASS_FRAME_BASE,
+					 FPGA_DRM_MAX_FRAME_BYTES,
+					 fpga->mmio_bar_resource_len,
+					 &gop_bar_offset);
+	if (ret)
+		return ret;
+	ret = fpga_drm_axi_to_bar_offset(fpga,
+					 FPGA_HW_DDR_SCRATCH_AXI_BASE,
+					 PAGE_SIZE,
+					 fpga->mmio_bar_resource_len,
+					 &scratch_bar_offset);
+	if (ret)
+		return ret;
+
+	drm_info(&fpga->drm,
+		 "hardware contract: BAR%d resource=0x%llx mapped=0x%llx translation=0x%08llx usable_host=0x00000000-0x%08llx DDR_bypass_AXI=0x%08llx-0x%08llx host=0x%08llx-0x%08llx GOP_bypass=0x%08llx-0x%08llx host=0x%08llx GOP_VDMA=0x%08llx-0x%08llx scratch=0x%08llx host=0x%08llx VDMA_ring=0x%08llx-0x%08llx count=%u\n",
+		 fpga->mmio_bar_idx,
+		 (unsigned long long)fpga->mmio_bar_resource_len,
+		 (unsigned long long)fpga->mmio_bar_mapped_len,
+		 FPGA_HW_BYPASS_AXI_TRANSLATION,
+		 FPGA_HW_BYPASS_HOST_USABLE_SIZE - 1,
+		 FPGA_HW_DDR_BYPASS_AXI_BASE, FPGA_HW_DDR_BYPASS_AXI_END,
+		 ddr_bar_offset, ddr_bar_offset + FPGA_HW_DDR_BYPASS_SIZE - 1,
+		 FPGA_HW_GOP_BYPASS_FRAME_BASE,
+		 FPGA_HW_GOP_BYPASS_FRAME_END, gop_bar_offset,
+		 FPGA_HW_GOP_VDMA_FRAME_BASE, FPGA_HW_GOP_VDMA_FRAME_END,
+		 FPGA_HW_DDR_SCRATCH_AXI_BASE, scratch_bar_offset,
+		 FPGA_HW_FRAME_BASE, FPGA_HW_FRAME_RING_END,
+		 FPGA_HW_FRAME_COUNT);
+	return 0;
+}
+
+static int fpga_drm_map_bypass_axi_range(struct fpga_drm_device *fpga,
+					 u64 axi_addr, size_t size,
+					 void __iomem **mapping,
+					 u64 *bar_offset)
+{
+	u64 offset;
+	int ret;
+
+	if (!mapping || !size)
+		return -EINVAL;
+
+	ret = fpga_drm_axi_to_bar_offset(fpga, axi_addr, size,
+					 fpga->mmio_bar_resource_len, &offset);
+	if (ret) {
+		drm_err(&fpga->drm,
+			"bypass AXI range 0x%llx-0x%llx cannot translate into BAR%d resource=0x%llx (translation=0x%llx)\n",
+			axi_addr, axi_addr + size - 1, fpga->mmio_bar_idx,
+			(unsigned long long)fpga->mmio_bar_resource_len,
+			FPGA_HW_BYPASS_AXI_TRANSLATION);
+		return ret;
+	}
+	if (offset + size > fpga->mmio_bar_resource_len) {
+		drm_err(&fpga->drm,
+			"translated bypass range host+0x%llx-0x%llx outside BAR%d resource=0x%llx\n",
+			offset, offset + size - 1, fpga->mmio_bar_idx,
+			(unsigned long long)fpga->mmio_bar_resource_len);
+		return -ERANGE;
+	}
+
+	*mapping = pci_iomap_range(fpga->pdev, fpga->mmio_bar_idx,
+				  offset, size);
+	if (!*mapping) {
+		drm_err(&fpga->drm,
+			"failed to map bypass BAR%d host+0x%llx-0x%llx for AXI 0x%llx-0x%llx\n",
+			fpga->mmio_bar_idx, offset, offset + size - 1,
+			axi_addr, axi_addr + size - 1);
+		return -ENOMEM;
+	}
+	if (bar_offset)
+		*bar_offset = offset;
+
+	return 0;
+}
+
+static int fpga_drm_ddr_scratch_test(struct fpga_drm_device *fpga)
+{
+	static const u32 patterns[FPGA_HW_DDR_TEST_WORDS] = {
+		0x55aa00ff, 0xa55ac33c, 0x01234567, 0x89abcdef,
+	};
+	void __iomem *mapping;
+	u32 saved[FPGA_HW_DDR_TEST_WORDS];
+	u32 value;
+	u64 bar_offset;
+	unsigned int i;
+	int ret;
+
+	if (!ddr_bypass_test)
+		return 0;
+
+	ret = fpga_drm_map_bypass_axi_range(fpga,
+					    FPGA_HW_DDR_SCRATCH_AXI_BASE,
+					    PAGE_SIZE, &mapping, &bar_offset);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < FPGA_HW_DDR_TEST_WORDS; i++)
+		saved[i] = ioread32(mapping + i * sizeof(u32));
+	for (i = 0; i < FPGA_HW_DDR_TEST_WORDS; i++)
+		iowrite32(patterns[i], mapping + i * sizeof(u32));
+	wmb();
+
+	ret = 0;
+	for (i = 0; i < FPGA_HW_DDR_TEST_WORDS; i++) {
+		value = ioread32(mapping + i * sizeof(u32));
+		if (value != patterns[i]) {
+			drm_err(&fpga->drm,
+				"DDR bypass scratch mismatch word=%u expected=0x%08x got=0x%08x\n",
+				i, patterns[i], value);
+			ret = -EIO;
+			break;
+		}
+	}
+
+	for (i = 0; i < FPGA_HW_DDR_TEST_WORDS; i++)
+		iowrite32(saved[i], mapping + i * sizeof(u32));
+	wmb();
+	for (i = 0; i < FPGA_HW_DDR_TEST_WORDS; i++) {
+		value = ioread32(mapping + i * sizeof(u32));
+		if (value != saved[i]) {
+			drm_err(&fpga->drm,
+				"DDR bypass scratch restore mismatch word=%u expected=0x%08x got=0x%08x\n",
+				i, saved[i], value);
+			ret = -EIO;
+			break;
+		}
+	}
+
+	pci_iounmap(fpga->pdev, mapping);
+	if (!ret)
+		drm_info(&fpga->drm,
+			 "DDR bypass scratch test passed at AXI=0x%08llx BAR%d+0x%08llx (%u words restored)\n",
+			 FPGA_HW_DDR_SCRATCH_AXI_BASE,
+			 fpga->mmio_bar_idx, bar_offset,
+			 FPGA_HW_DDR_TEST_WORDS);
+	return ret;
+}
+
+static int fpga_drm_write_ddr_test_pattern(struct fpga_drm_device *fpga,
+					   const struct fpga_video_mode *mode)
+{
+	static const u32 colors[] = {
+		0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff,
+		0x0000ffff, 0x00ff00ff, 0x00ffff00, 0x00000000,
+	};
+	const size_t pixels_per_line = mode->line_bytes / sizeof(u32);
+	const size_t frame_bytes = mode->line_bytes * mode->drm.vdisplay;
+	void __iomem *mapping;
+	u32 *frame;
+	unsigned int x;
+	unsigned int y;
+	int ret = 0;
+
+	if (!ddr_bypass_test)
+		return 0;
+	if (!pixels_per_line || mode->line_bytes % sizeof(u32))
+		return -EINVAL;
+
+	frame = kvmalloc(frame_bytes, GFP_KERNEL);
+	if (!frame)
+		return -ENOMEM;
+
+	for (y = 0; y < mode->drm.vdisplay; y++) {
+		for (x = 0; x < pixels_per_line; x++) {
+			unsigned int band = x * ARRAY_SIZE(colors) /
+					    pixels_per_line;
+
+			frame[y * pixels_per_line + x] = colors[band];
+		}
+	}
+
+	ret = fpga_drm_map_bypass_axi_range(fpga,
+					    FPGA_HW_GOP_BYPASS_FRAME_BASE,
+					    frame_bytes, &mapping, NULL);
+	if (!ret) {
+		memcpy_toio(mapping, frame, frame_bytes);
+		wmb();
+		if (ioread32(mapping) != frame[0] ||
+		    ioread32(mapping + frame_bytes - sizeof(u32)) !=
+			    frame[frame_bytes / sizeof(u32) - 1]) {
+			drm_err(&fpga->drm,
+				"DDR bypass GOP frame pattern readback mismatch\n");
+			ret = -EIO;
+		}
+		pci_iounmap(fpga->pdev, mapping);
+	}
+
+	kvfree(frame);
+	if (!ret)
+		drm_info(&fpga->drm,
+			 "DDR bypass test pattern wrote GOP frame bypass_AXI=0x%08llx VDMA_AXI=0x%08llx for %s (%zu bytes)\n",
+			 FPGA_HW_GOP_BYPASS_FRAME_BASE,
+			 FPGA_HW_GOP_VDMA_FRAME_BASE,
+			 mode->name, frame_bytes);
+	return ret;
+}
+
 struct fpga_i2c_lut_entry {
 	u8 dev_addr8;
 	u16 reg_addr;
@@ -450,20 +779,35 @@ static const struct fpga_i2c_lut_entry fpga_hdmi_lut[] = {
 	{ 0xFF, 0xFFFF, 0xFF },
 };
 
-static int fpga_drm_mmio_check(struct fpga_drm_device *fpga, u64 addr,
-			       size_t size)
+static int fpga_drm_mmio_check(struct fpga_drm_device *fpga, u64 axi_addr,
+			       size_t size, u64 *bar_offset)
 {
+	int ret;
+
 	if (!fpga->mmio_bar)
 		return -ENODEV;
 
-	if (addr & 3 || size != 4)
+	if (axi_addr & 3 || size != 4)
 		return -EINVAL;
 
-	if (addr > U64_MAX - size || addr + size > fpga->mmio_bar_len) {
+	ret = fpga_drm_axi_to_bar_offset(fpga, axi_addr, size,
+					 fpga->mmio_bar_mapped_len,
+					 bar_offset);
+	if (ret) {
 		drm_err(&fpga->drm,
-			"AXI-Lite address 0x%llx size=%zu outside %s BAR%d len=0x%llx\n",
-			addr, size, fpga->mmio_bar_name, fpga->mmio_bar_idx,
-			(unsigned long long)fpga->mmio_bar_len);
+			"AXI-Lite address 0x%llx size=%zu cannot translate into %s BAR%d mapped=0x%llx (translation=0x%llx)\n",
+			axi_addr, size, fpga->mmio_bar_name,
+			fpga->mmio_bar_idx,
+			(unsigned long long)fpga->mmio_bar_mapped_len,
+			FPGA_HW_BYPASS_AXI_TRANSLATION);
+		return ret;
+	}
+	if (*bar_offset + size > fpga->mmio_bar_mapped_len) {
+		drm_err(&fpga->drm,
+			"AXI-Lite address 0x%llx translated to host+0x%llx outside %s BAR%d mapped=0x%llx\n",
+			axi_addr, *bar_offset, fpga->mmio_bar_name,
+			fpga->mmio_bar_idx,
+			(unsigned long long)fpga->mmio_bar_mapped_len);
 		return -ERANGE;
 	}
 
@@ -472,23 +816,25 @@ static int fpga_drm_mmio_check(struct fpga_drm_device *fpga, u64 addr,
 
 static int fpga_drm_axi_write(struct fpga_drm_device *fpga, u64 addr, u32 val)
 {
-	int ret = fpga_drm_mmio_check(fpga, addr, sizeof(val));
+	u64 bar_offset;
+	int ret = fpga_drm_mmio_check(fpga, addr, sizeof(val), &bar_offset);
 
 	if (ret)
 		return ret;
 
-	iowrite32(val, fpga->mmio_bar + addr);
+	iowrite32(val, fpga->mmio_bar + bar_offset);
 	return 0;
 }
 
 static int fpga_drm_axi_read(struct fpga_drm_device *fpga, u64 addr, u32 *val)
 {
-	int ret = fpga_drm_mmio_check(fpga, addr, sizeof(*val));
+	u64 bar_offset;
+	int ret = fpga_drm_mmio_check(fpga, addr, sizeof(*val), &bar_offset);
 
 	if (ret)
 		return ret;
 
-	*val = ioread32(fpga->mmio_bar + addr);
+	*val = ioread32(fpga->mmio_bar + bar_offset);
 	return 0;
 }
 
@@ -511,17 +857,25 @@ static int fpga_drm_axi_update_bits(struct fpga_drm_device *fpga, u64 addr,
 static int fpga_drm_require_range(struct fpga_drm_device *fpga,
 				  const char *name, u64 base, u64 size)
 {
-	if (base > U64_MAX - size || base + size > fpga->mmio_bar_len) {
+	u64 bar_offset;
+	int ret;
+
+	ret = fpga_drm_axi_to_bar_offset(fpga, base, size,
+					 fpga->mmio_bar_mapped_len,
+					 &bar_offset);
+	if (ret) {
 		drm_err(&fpga->drm,
-			"%s AXI range 0x%llx-0x%llx outside %s BAR%d len=0x%llx\n",
+			"%s AXI range 0x%llx-0x%llx cannot translate into %s BAR%d mapped=0x%llx\n",
 			name, base, base + size - 1, fpga->mmio_bar_name,
 			fpga->mmio_bar_idx,
-			(unsigned long long)fpga->mmio_bar_len);
-		return -ERANGE;
+			(unsigned long long)fpga->mmio_bar_mapped_len);
+		return ret;
 	}
 
-	drm_info(&fpga->drm, "pipeline range %-18s 0x%08llx-0x%08llx\n",
-		 name, base, base + size - 1);
+	drm_info(&fpga->drm,
+		 "pipeline range %-18s AXI=0x%08llx-0x%08llx BAR%d+0x%06llx-0x%06llx\n",
+		 name, base, base + size - 1, fpga->mmio_bar_idx,
+		 bar_offset, bar_offset + size - 1);
 	return 0;
 }
 
@@ -620,6 +974,7 @@ static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
 					 const char *name, u64 chan,
 					 u64 addr_base, u32 cr, u32 frame_delay)
 {
+	const unsigned int frame_count = fpga_drm_vdma_frame_count();
 	u32 status;
 	unsigned int i;
 	int ret;
@@ -636,7 +991,7 @@ static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
 
 	ret = fpga_drm_axi_write(fpga, FPGA_HW_VDMA_BASE + chan +
 				 AXI_VDMA_FRMSTORE_OFFSET,
-				 FPGA_HW_FRAME_COUNT);
+				 frame_count);
 	if (ret)
 		return ret;
 
@@ -657,10 +1012,11 @@ static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
 	if (ret)
 		return ret;
 
-	for (i = 0; i < FPGA_HW_FRAME_COUNT; i++) {
+	for (i = 0; i < frame_count; i++) {
 		ret = fpga_drm_axi_write(fpga, FPGA_HW_VDMA_BASE + addr_base +
 					 AXI_VDMA_START_ADDR_OFFSET + i * 4,
-					 lower_32_bits(fpga_hw_frame_addr[i]));
+					 lower_32_bits(
+						 fpga_drm_vdma_frame_addr(i)));
 		if (ret)
 			return ret;
 	}
@@ -686,7 +1042,7 @@ static int fpga_drm_program_vdma_channel(struct fpga_drm_device *fpga,
 		 name, FPGA_HW_VDMA_BASE + chan,
 		 mode->drm.hdisplay, mode->drm.vdisplay, mode->line_bytes,
 		 (u32)(cr | AXI_VDMA_CR_RUNSTOP),
-		 status, FPGA_HW_FRAME_COUNT, fpga_hw_frame_addr[0]);
+		 status, frame_count, fpga_drm_vdma_frame_addr(0));
 	return 0;
 }
 
@@ -1063,10 +1419,7 @@ static int fpga_drm_configure_static_pipeline(struct fpga_drm_device *fpga)
 		return ret;
 	drm_info(&fpga->drm,
 		 "VDMA DDR frame ring 0x%08llx-0x%08llx count=%u stride=0x%x\n",
-		 FPGA_HW_FRAME_BASE,
-		 FPGA_HW_FRAME_BASE +
-		 (FPGA_HW_FRAME_COUNT - 1) * FPGA_HW_FRAME_SPACING +
-		 FPGA_DRM_MAX_FRAME_BYTES - 1,
+		 FPGA_HW_FRAME_BASE, FPGA_HW_FRAME_RING_END,
 		 FPGA_HW_FRAME_COUNT, FPGA_HW_FRAME_SPACING);
 
 	ret = fpga_drm_config_video_lock_gpio(fpga);
@@ -1105,6 +1458,9 @@ static int fpga_drm_program_mode(struct fpga_drm_device *fpga,
 	if (ret)
 		return ret;
 	ret = fpga_drm_config_vtc(fpga, mode);
+	if (ret)
+		return ret;
+	ret = fpga_drm_write_ddr_test_pattern(fpga, mode);
 	if (ret)
 		return ret;
 
@@ -2164,14 +2520,17 @@ static int fpga_drm_open_xdma(struct fpga_drm_device *fpga)
 		return -ENODEV;
 
 	fpga->mmio_bar = xdma_device_bypass_bar(fpga->xdma);
-	ret = xdma_device_bypass_bar_info(fpga->xdma, &fpga->mmio_bar_idx,
-					  &fpga->mmio_bar_len);
+	ret = xdma_device_bypass_bar_mapping_info(
+		fpga->xdma, &fpga->mmio_bar_idx,
+		&fpga->mmio_bar_resource_len, &fpga->mmio_bar_mapped_len);
 	if (!ret && fpga->mmio_bar) {
 		fpga->mmio_bar_name = "bypass";
 	} else {
 		fpga->mmio_bar = xdma_device_user_bar(fpga->xdma);
-		ret = xdma_device_user_bar_info(fpga->xdma, &fpga->mmio_bar_idx,
-						&fpga->mmio_bar_len);
+		ret = xdma_device_user_bar_mapping_info(
+			fpga->xdma, &fpga->mmio_bar_idx,
+			&fpga->mmio_bar_resource_len,
+			&fpga->mmio_bar_mapped_len);
 		if (!ret && fpga->mmio_bar)
 			fpga->mmio_bar_name = "user";
 	}
@@ -2205,6 +2564,11 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			composition_backend);
 		return -EINVAL;
 	}
+	if (ddr_bypass_test && (upload_enabled || !configure_pipeline)) {
+		dev_err(&pdev->dev,
+			"ddr_bypass_test=1 requires upload_enabled=0 and configure_pipeline=1\n");
+		return -EINVAL;
+	}
 
 	fpga = devm_drm_dev_alloc(&pdev->dev, &fpga_drm_driver,
 				  struct fpga_drm_device, drm);
@@ -2232,12 +2596,20 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 
 	drm_info(drm,
-		 "XDMA opened: user=%d h2c=%d c2h=%d using_h2c=%u mmio=%s BAR%d len=0x%llx\n",
+		 "XDMA opened: user=%d h2c=%d c2h=%d using_h2c=%u mmio=%s BAR%d resource=0x%llx mapped=0x%llx\n",
 		 fpga->user_max, fpga->h2c_channel_max, fpga->c2h_channel_max,
 		 h2c_channel, fpga->mmio_bar_name, fpga->mmio_bar_idx,
-		 (unsigned long long)fpga->mmio_bar_len);
+		 (unsigned long long)fpga->mmio_bar_resource_len,
+		 (unsigned long long)fpga->mmio_bar_mapped_len);
+
+	ret = fpga_drm_validate_hw_contract(fpga);
+	if (ret)
+		return ret;
 
 	ret = fpga_drm_configure_static_pipeline(fpga);
+	if (ret)
+		return ret;
+	ret = fpga_drm_ddr_scratch_test(fpga);
 	if (ret)
 		return ret;
 
@@ -2255,12 +2627,12 @@ static int fpga_drm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		drm_fbdev_generic_setup(drm, 32);
 
 	drm_info(drm,
-		 "registered %zu-mode XRGB8888 stream display max=%ux%u pixel_clock<=%u kHz connected=%u non_desktop=%u fbdev=%u upload=%u debug=%u overlay=%u composition=%s\n",
+		 "registered %zu-mode XRGB8888 stream display max=%ux%u pixel_clock<=%u kHz connected=%u non_desktop=%u fbdev=%u upload=%u debug=%u overlay=%u composition=%s ddr_bypass_test=%u\n",
 		 ARRAY_SIZE(fpga_video_modes), FPGA_DRM_MAX_WIDTH,
 		 FPGA_DRM_MAX_HEIGHT, FPGA_DRM_MAX_PIXEL_CLOCK_KHZ,
 		 connector_connected, connector_non_desktop, enable_fbdev,
 		 upload_enabled, debug_logging, enable_overlay,
-		 composition_backend);
+		 composition_backend, ddr_bypass_test);
 
 	return 0;
 }

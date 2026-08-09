@@ -1,182 +1,124 @@
-# Recreating the Vivado Hardware Project on Linux
+# Recreating the Canonical Vivado Project
 
-This document describes the Linux Vivado flow for recreating the AX7203
-PCIe/HDMI hardware project from git-tracked source files.
+The repository contains one active hardware configuration:
+`PCIe_GOP_ROM_32K_1080P_DEFAULT`. It is the validated AX7203 display design
+with XDMA 4.1 Gen2 x4, the 64 MiB BAR2 display window, SDC1 identity registers,
+and the sealed 32 KiB 1920x1080 GOP Option ROM.
 
-The source of truth is `vivado_project/`. Generated Vivado projects, build
-runs, HLS `solution1/` directories, logs, and bitstreams are intentionally not
-tracked in git.
+Git stores the inputs needed to recreate that design. The generated `.xpr`,
+IP output, synthesis/implementation runs, reports, bitstreams, and hardware
+manager state stay under the ignored `vivado_project/linux_build/` directory.
 
-## Toolchain
-
-Use the same major tool versions as the project export:
+## Requirements
 
 - Vivado 2023.2
 - Vitis HLS 2023.2
 - Python 3
+- Bash
 
-The scripts default to the local paths used on this machine:
-
-```sh
-VIVADO_BIN=/home/alpk/xilinx/Vivado/2023.2/bin/vivado
-VITIS_HLS_BIN_DIR=/home/alpk/xilinx/Vitis_HLS/2023.2/bin
-```
-
-If your install paths differ, set those variables before running the flow:
+The scripts default to the tool locations used on the development machine.
+Override them when necessary:
 
 ```sh
 export VIVADO_BIN=/path/to/Vivado/2023.2/bin/vivado
 export VITIS_HLS_BIN_DIR=/path/to/Vitis_HLS/2023.2/bin
 ```
 
-## What the Scripts Do
+## Fresh-clone recreation
 
-`vivado_project/scripts/run_linux_vivado_flow.sh` is the top-level entry point.
-It performs these steps:
-
-1. Checks that Vivado is available.
-2. Adds Vitis HLS to `PATH`.
-3. Regenerates missing AX7203 HLS IP packages.
-4. Recreates the Vivado project under `vivado_project/linux_build/PCIe` if the
-   project is missing.
-5. Opens the recreated project.
-6. Refreshes the HLS and custom IP repositories.
-7. Upgrades locked HLS IPs when required.
-8. Validates the block design.
-9. Generates IP targets.
-10. Checks and fixes the AX7203 PCIe GT lane LOC order.
-
-The default HLS IP set is:
+From the repository root, run:
 
 ```sh
-color_convert pixel_pack pixel_unpack trace_cntrl_32 trace_cntrl_64
-```
-
-The `_2` HLS projects are excluded from the default flow because they target a
-different FPGA part and are not used by this AX7203 Vivado project.
-
-## Check-Only Recreate Flow
-
-Run this first after cloning or after changing hardware sources:
-
-```sh
-vivado_project/scripts/run_linux_vivado_flow.sh
-```
-
-Expected result:
-
-- HLS IP packages are generated if missing.
-- `vivado_project/linux_build/PCIe/PCIe.xpr` exists.
-- Vivado validates the block design.
-- The lane-order checker reports:
-
-```text
-pipe_lane[0..3] -> [5, 4, 6, 7]
-```
-
-This flow does not run synthesis or implementation.
-
-## Force a Fresh Recreate
-
-`--recreate` refuses to overwrite an existing generated project. Move the old
-generated project first:
-
-```sh
-mv vivado_project/linux_build/PCIe vivado_project/linux_build/PCIe.old
+python3 vivado_project/scripts/check_vivado_source_tree.py
+vivado_project/scripts/run_expansion_rom_unit_sim.sh
 vivado_project/scripts/run_linux_vivado_flow.sh --recreate
 ```
 
-Use this when testing whether the checked-in sources are sufficient to recreate
-the project from scratch.
+Simulation scratch directories are created beneath the ignored
+`vivado_project/.sim_work/` workspace path, not under `/tmp`. Set
+`KEEP_SIM_WORK=1` when the generated simulator transcript must be retained.
 
-## Build Bitstream and Reports
+The last command creates exactly one generated project:
 
-Run synthesis and implementation:
+```text
+vivado_project/linux_build/PCIe_GOP_ROM_32K_1080P_DEFAULT/
+  PCIe_GOP_ROM_32K_1080P_DEFAULT.xpr
+```
+
+`--recreate` refuses to overwrite that directory. Move or remove the generated
+directory explicitly when a genuinely fresh recreation is required. Do not
+change the project name to preserve an old hardware variant; use the relevant
+Git commit instead.
+
+The flow verifies the sealed cold-GOP evidence and ROM hashes, regenerates
+missing HLS packages, recreates the clean 64 MiB display block design,
+integrates ROM and SDC1, regenerates the outer XDMA and nested `pcie_7x`,
+repairs exactly four BAR6 decoder sites, checks the address contract, and
+enforces AX7203 PCIe lane order `5,4,6,7`.
+
+The selected HLS C++/Tcl projects and the frame-counter RTL package are source
+inputs. Their generated HLS `solution1/` trees and the former standalone
+frame-counter Vivado project are build products. The source-tree checker also
+rejects a frame-counter package that refers outside its own package directory.
+
+## Build and verify
+
+Run synthesis, implementation, and bitstream generation with:
 
 ```sh
 vivado_project/scripts/run_linux_vivado_flow.sh --build --jobs 2
 ```
 
-Generated outputs stay under:
-
-```text
-vivado_project/linux_build/PCIe/
-```
-
-Important generated files:
-
-- `PCIe.runs/impl_1/PCIe_wrapper.bit`
-- `PCIe.runs/impl_1/PCIe_wrapper.bin`
-- `PCIe.runs/impl_1/PCIe_wrapper.ltx`
-- `linux_reports/timing_summary.rpt`
-- `linux_reports/route_status.rpt`
-- `linux_reports/drc.rpt`
-- `linux_reports/utilization.rpt`
-
-These files are ignored by git.
-
-## Install Local Board Artifacts
-
-To copy generated programming artifacts into the local board-artifact path:
+Audit an existing routed checkpoint without launching a new implementation:
 
 ```sh
-vivado_project/scripts/run_linux_vivado_flow.sh --build --install-artifacts --jobs 2
+vivado_project/scripts/run_linux_vivado_flow.sh --verify
 ```
 
-This copies `.bit`, `.bin`, and `.ltx` files to:
+The routed build is accepted only when:
 
-```text
-fpga_hardware/PCIe_wrapper/
-```
+- setup WNS is at least `-2.500 ns` and hold slack is nonnegative;
+- blocking DRC, unrouted-net, and partially-routed-net counts are zero;
+- logical PCIe lanes 0 through 3 use GT channels `5,4,6,7`;
+- `GTPE2_COMMON_X0Y1`, `PCIE_X0Y0`, refclock buffer `X0Y3`, and PERST# `J20`
+  are retained;
+- the 32 KiB ROM and SDC1 logic remain in the routed netlist; and
+- the XDMA OOC checkpoint was rebuilt after the generated BAR6 repair.
 
-`fpga_hardware/` is ignored by git. Share known-good bitstreams through release
-artifacts or an explicit Git LFS policy, not through normal source commits.
+Reports and hashes are written beneath the generated project's
+`linux_reports/` directory. Vivado implementation can produce different
+bitstream hashes across runs, so acceptance is based on the recorded contract
+and exact embedded ROM hash rather than a hard-coded bitstream hash.
 
-## Session Notes and Known Warnings
-
-The current check-only flow was validated on Linux with Vivado/Vitis HLS
-2023.2. During validation, HLS IP packages were regenerated, Vivado upgraded
-locked `color_convert` and `pixel_unpack` IP instances, block-design target
-generation completed, and the PCIe lane-order check passed.
-
-Expected non-fatal messages include:
-
-- Vitis HLS warning that `vitis_hls` is deprecated in favor of `vitis-run`.
-- Vivado warning about no write access to the local Tcl store under
-  `~/.Xilinx/Vivado/2023.2/XilinxTclStore`.
-- HLS scheduling warnings for the trace controller IPs.
-- Block-design warnings about the XDMA stream width mismatch into
-  `frame_counter_0`; the design intentionally uses the lower-order stream bits
-  in this path.
-- HLS IP revision changes after regeneration; `build_pcie_linux.tcl` upgrades
-  locked HLS IPs before validation.
-
-Treat the run as failed if:
-
-- `validate_bd_design` exits with an error.
-- `scripts/check_fix_pcie_lane_order.py` cannot find or fix the PCIe GT lane
-  LOC constraints.
-- The final lane order is not `[5, 4, 6, 7]`.
-- `--build` completes with negative routed setup slack that is unacceptable for
-  the validation you are doing.
-
-## Git Notes
-
-The tracked hardware source set should include:
-
-- `vivado_project/export/PCIe.tcl`
-- `vivado_project/scripts/`
-- `vivado_project/hls/` source projects, excluding generated `solution1/`
-- `vivado_project/IPs/IP_Packages/`
-- selected seed files under `vivado_project/PCIe.srcs/`
-
-Before committing hardware-flow changes, inspect the staged files:
+To copy the generated `.bit`, SPI `.bin`, `.ltx`, ROM, and reports into the
+ignored local board-artifact directory, run:
 
 ```sh
-git add .gitignore vivado_project doc/vivado_linux_recreate.md README.md
-git diff --cached --name-only
+vivado_project/scripts/run_linux_vivado_flow.sh \
+  --build --install-artifacts --jobs 2
 ```
 
-Do not commit generated Vivado build directories such as `.runs`, `.cache`,
-`.gen`, `.hw`, `.ip_user_files`, `linux_build`, HLS `solution1/`, or bitstream
-artifacts.
+This does not program the FPGA. Board programming, PCIe reset, ROM readback,
+UEFI GOP validation, and Linux `fpga_drm` regression remain separate hardware
+gates.
+
+## Source-control policy
+
+Keep the recreate Tcl, RTL/XDC/MIG inputs, ROM/SDC1 RTL and tests, selected HLS
+and custom-IP source, the sealed 1080p EFI payload/evidence, and the deterministic
+32 KiB ROM files. Do not commit `.xpr`, `.runs`, `.cache`, `.gen`, `.hw`,
+`.ip_user_files`, `.dcp`, bit/bin/LTX build artifacts, HLS `solution1/`, logs,
+or local hardware-manager state. The ROM `.bin` under `vivado_project/rom/` is
+the intentional exception because it is a small, byte-exact synthesis input.
+
+Before committing, run:
+
+```sh
+python3 vivado_project/scripts/check_vivado_source_tree.py --require-tracked
+git status --short
+```
+
+The source-tree checker accepts zero generated projects in a fresh clone or the
+single canonical local project. In pre-commit mode it also requires every
+recreation input to be tracked. Any additional `.xpr` is treated as stale
+workspace state.

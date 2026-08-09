@@ -1,0 +1,75 @@
+/** @file
+  Shared Simple Display Controller hardware contract.
+
+  Keep these values aligned with fpga_drm_drv.c. All MMIO offsets are relative
+  to PCI BAR2; VDMA frame addresses are FPGA AXI addresses.
+
+  SPDX-License-Identifier: BSD-2-Clause-Patent
+**/
+
+#ifndef SIMPLE_DISPLAY_HARDWARE_H_
+#define SIMPLE_DISPLAY_HARDWARE_H_
+
+#include <Uefi.h>
+
+#define SIMPLE_DISPLAY_VENDOR_ID              0x10EE
+#define SIMPLE_DISPLAY_DEVICE_ID              0x7024
+#define SIMPLE_DISPLAY_BASE_CLASS             0x03
+#define SIMPLE_DISPLAY_BAR_INDEX              2
+#define SIMPLE_DISPLAY_BAR_MIN_SIZE           0x04000000ULL
+
+#define SIMPLE_DISPLAY_PIXEL_UNPACK_OFFSET    0x00000000ULL
+#define SIMPLE_DISPLAY_VTC_OFFSET             0x00010000ULL
+#define SIMPLE_DISPLAY_IIC_OFFSET             0x00020000ULL
+#define SIMPLE_DISPLAY_VDMA_OFFSET            0x00040000ULL
+#define SIMPLE_DISPLAY_COLOR_OFFSET           0x00050000ULL
+#define SIMPLE_DISPLAY_CLOCK_OFFSET           0x00060000ULL
+#define SIMPLE_DISPLAY_GPIO_OFFSET            0x00070000ULL
+#define SIMPLE_DISPLAY_IDENTITY_OFFSET        0x00080000ULL
+#define SIMPLE_DISPLAY_FRAMEBUFFER_OFFSET     0x02000000ULL
+#define SIMPLE_DISPLAY_SCRATCH_OFFSET         0x03FFF000ULL
+#define SIMPLE_DISPLAY_REGISTER_WINDOW_SIZE   0x00010000ULL
+
+#define SIMPLE_DISPLAY_DDR_FRAME_ADDRESS      0x3E000000U
+#define SIMPLE_DISPLAY_BYTES_PER_PIXEL        4U
+#define SIMPLE_DISPLAY_MAX_WIDTH              1920U
+#define SIMPLE_DISPLAY_MAX_HEIGHT             1080U
+#define SIMPLE_DISPLAY_MAX_FRAME_BYTES        0x007E9000U
+
+#define SIMPLE_DISPLAY_ABI_MAGIC              0x31434453U
+#define SIMPLE_DISPLAY_ABI_VERSION            0x00010000U
+#define SIMPLE_DISPLAY_ABI_VERSION_MAJOR      1U
+#define SIMPLE_DISPLAY_ABI_VERSION_MINOR      0U
+#define SIMPLE_DISPLAY_ABI_FEATURE_DIRECT_DDR BIT0
+#define SIMPLE_DISPLAY_ABI_FEATURE_OPTION_ROM BIT1
+#define SIMPLE_DISPLAY_ABI_REQUIRED_FEATURES  \
+  (SIMPLE_DISPLAY_ABI_FEATURE_DIRECT_DDR | SIMPLE_DISPLAY_ABI_FEATURE_OPTION_ROM)
+
+#define SIMPLE_DISPLAY_ID_MAGIC_OFFSET        0x00ULL
+#define SIMPLE_DISPLAY_ID_VERSION_OFFSET      0x04ULL
+#define SIMPLE_DISPLAY_ID_FEATURES_OFFSET     0x08ULL
+#define SIMPLE_DISPLAY_ID_ROM_SIZE_OFFSET     0x0CULL
+
+typedef struct {
+  CONST CHAR8  *Name;
+  UINT32       PixelClockKhz;
+  UINT32       HorizontalActive;
+  UINT32       HorizontalSyncStart;
+  UINT32       HorizontalSyncEnd;
+  UINT32       HorizontalTotal;
+  UINT32       VerticalActive;
+  UINT32       VerticalSyncStart;
+  UINT32       VerticalSyncEnd;
+  UINT32       VerticalTotal;
+  BOOLEAN      PositiveHSync;
+  BOOLEAN      PositiveVSync;
+  UINT32       ClockConfig0;
+  UINT32       ClockConfig2;
+} SIMPLE_DISPLAY_MODE;
+
+#define SIMPLE_DISPLAY_MODE_COUNT      6U
+#define SIMPLE_DISPLAY_GOP_MODE_COUNT  1U
+
+extern CONST SIMPLE_DISPLAY_MODE  gSimpleDisplayModes[SIMPLE_DISPLAY_MODE_COUNT];
+
+#endif

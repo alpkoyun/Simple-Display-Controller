@@ -50,6 +50,9 @@ Supported connector modes:
 | `1920x1080@60` | `148.500 MHz` |
 | `1920x1080@30` | `74.250 MHz` |
 
+`1920x1080@60` is the sole preferred connector mode. The remaining entries stay
+available for explicit KMS or desktop selection.
+
 Userspace switches resolution through normal KMS modesets. On enable/modeset,
 the driver stops outstanding uploads, programs the video clock wizard, VTC, and
 VDMA for the selected mode, and resumes active-size frame uploads.
@@ -75,8 +78,9 @@ sudo modprobe fpga_drm \
   enable_fbdev=1
 ```
 
-With those parameters, GDM/Xorg has been observed to pick up `/dev/dri/card0`,
-set `1280x720@60`, and display the desktop through the FPGA output. In that
+With those parameters, GDM/Xorg was previously observed to pick up
+`/dev/dri/card0`, set the then-preferred `1280x720@60`, and display the desktop
+through the FPGA output. The current source prefers `1920x1080@60`. In that
 desktop state the primary plane is active, but the overlay plane may remain
 unused by the compositor. That means the driver is doing KMS scanout and XDMA
 frame upload, but not necessarily exercising the CPU overlay-composition path.
@@ -94,6 +98,7 @@ frame upload, but not necessarily exercising the CPU overlay-composition path.
 | `upload_enabled` | bool | `true` | Enables XDMA frame upload; set to false for DRM-only diagnostics. |
 | `debug_logging` | bool | `false` | Enables extra connector, modeset, upload, and DMA logs. |
 | `configure_pipeline` | bool | `true` | Programs FPGA video IPs through the XDMA bypass BAR during probe and modeset. |
+| `ddr_bypass_test` | bool | `false` | Diagnostic-only direct bypass-to-DDR read/write and scanout-pattern test. Requires `upload_enabled=0 configure_pipeline=1` and a non-aliased, representable bypass DDR range. |
 | `enable_overlay` | bool | `false` | Exposes one experimental CPU-composited KMS overlay plane. |
 | `composition_backend` | charp | `cpu` | Selects the composition backend. Only `cpu` is implemented; `fpga` is reserved for later hardware composition. |
 

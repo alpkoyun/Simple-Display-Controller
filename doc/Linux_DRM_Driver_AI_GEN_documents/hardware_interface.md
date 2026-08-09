@@ -18,12 +18,17 @@ The expected hardware contract is:
 - EOP/TLAST is asserted once per line;
 - the FPGA stages one complete active-mode frame into the VDMA DDR ring.
 
+These bullets describe the intended native upload interface. On the current
+July 16 export, the XDMA requester remains busy with zero completed descriptors
+and emits no H2C `TVALID`; VDMA readiness and direct-BAR scanout are validated
+separately.
+
 ## Linux-Visible Resources
 
 | Resource | Acquired by | Notes |
 |---|---|---|
 | PCI function | `fpga_drm_pci_driver` | Binds Xilinx XDMA PCI IDs. Only one PCI driver can own the function. |
-| BAR mappings | `libxdma.c:map_bars()` | XDMA maps the config/user/bypass BARs; `fpga_drm_drv.c` uses the bypass BAR for AXI-Lite video-IP registers in this hardware. |
+| BAR mappings | `libxdma.c:map_bars()` | The embedded XDMA layer maps at most the low 1 MiB prefix of each BAR. `fpga_drm_drv.c` uses the bypass prefix for video registers and maps bounded DDR ranges only for the opt-in diagnostic. |
 | DMA mask | `libxdma.c:set_dma_mask()` | Tries 64-bit DMA and falls back as needed. |
 | H2C engines | `libxdma.c:probe_engines()` | `fpga_drm` uses the configured `h2c_channel`, default 0. |
 | IRQ vectors | `libxdma.c:irq_setup()` | MSI-X, MSI, or legacy IRQ depending on platform and `interrupt_mode`. |
@@ -75,23 +80,41 @@ only for other designs that expose the AXI-Lite aperture there.
 | Interrupt registers | MSI-X/MSI/legacy channel and user interrupt control. |
 | XDMA bypass BAR AXI-Lite window | Host writes to the FPGA video IP address map. |
 
-The bypass BAR AXI address map is:
+The current XDMA bypass configuration uses `0x3c000000` as its AXI translation
+base. Low BAR offsets reach the control IPs as intended:
 
-| IP | AXI address |
-|---|---:|
-| Color convert | `0x00000000` |
-| Pixel unpack | `0x00010000` |
-| AXI IIC | `0x00020000` |
-| AXI VDMA | `0x00040000` |
-| VTC | `0x00050000` |
-| Video clock wizard | `0x00060000` |
-| Video lock GPIO | `0x00070000` |
-| DDR aperture in bypass map | `0x00080000` |
+| Resource | AXI address | Host BAR offset |
+|---|---:|---:|
+| Pixel unpack | `0x3c000000-0x3c00ffff` | `0x00000000-0x0000ffff` |
+| VTC | `0x3c010000-0x3c01ffff` | `0x00010000-0x0001ffff` |
+| AXI IIC | `0x3c020000-0x3c02ffff` | `0x00020000-0x0002ffff` |
+| AXI UART Lite | `0x3c030000-0x3c03ffff` | `0x00030000-0x0003ffff` |
+| AXI VDMA | `0x3c040000-0x3c04ffff` | `0x00040000-0x0004ffff` |
+| Color convert | `0x3c050000-0x3c05ffff` | `0x00050000-0x0005ffff` |
+| Video clock wizard | `0x3c060000-0x3c06ffff` | `0x00060000-0x0006ffff` |
+| Video lock GPIO | `0x3c070000-0x3c07ffff` | `0x00070000-0x0007ffff` |
+| Shared DDR frame store | `0x3e000000-0x3fffffff` | `0x02000000-0x03ffffff` |
 
-VDMA configuration uses AXI VDMA offsets relative to `0x00040000`. It does
-not use XDMA engine/config offsets for VDMA control. The frame addresses
-programmed into VDMA are still DDR addresses, currently starting at
-`0x81000000`; those are not host MMIO offsets.
+The 64 MiB BAR and translation are aligned, so every host offset from
+`0x00000000` through `0x03ffffff` is representable without aliasing. The first
+32 MiB contains the control region and unused space; the upper 32 MiB maps
+DDR3. The VDMA masters do not pass through the PCIe translation, but the
+current export gives them the same numeric DDR range,
+`0x3e000000-0x3fffffff`. Normal operation programs four maximum-sized frame
+stores at `0x3e000000-0x3ffa6fff`, leaving the final scratch page outside the
+ring.
+
+With `ddr_bypass_test=1 upload_enabled=0`, the driver temporarily programs
+VDMA with one frame, performs a bounded write/read/restore check, and writes a
+color-bar frame. Both the bypass master and VDMA use frame address
+`0x3e000000`. This diagnostic is off by default; normal Linux updates retain
+the four-frame ring and are intended to use XDMA H2C streaming. That H2C path
+is currently under recovery and must not be described as live-validated on this
+export.
+
+The generated export and live readback remain the authority. A future
+dedicated framebuffer BAR may provide a cleaner firmware contract, but the
+current shared address makes Linux and firmware programming less ambiguous.
 
 ## Not in Scope
 
